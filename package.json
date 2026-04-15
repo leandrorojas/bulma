@@ -1,0 +1,39 @@
+{
+  "name": "@leandrorojas/bulma",
+  "version": "0.0.1",
+  "description": "Build Ultra-Light Micro-Apps — CLI scaffolding tool for the Hoi-Poi micro-frontend platform",
+  "bin": {
+    "bulma": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leandrorojas/bulma.git"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.39.4",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.15.0"
+  }
+}
