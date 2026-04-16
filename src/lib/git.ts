@@ -23,7 +23,12 @@ export function runGit(
       env: options.env ? { ...process.env, ...options.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
     };
-    const child = doSpawn("git", args, spawnOptions);
+    // NOSONAR(tssecurity:S6350): command is hardcoded ("git"); args are a
+    // pre-built array (no shell interpretation). The only user-controlled
+    // values reaching this path are siteName (validated in create.ts against
+    // /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/) and the hoi-poi clone URL (hardcoded
+    // default, overridable only from internal code). Not a command-injection vector.
+    const child = doSpawn("git", args, spawnOptions); // NOSONAR
 
     let stderr = "";
     child.stderr?.on("data", (chunk: Buffer) => {
