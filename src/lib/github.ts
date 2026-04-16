@@ -12,8 +12,9 @@ export interface CreateRepoDeps {
   fetch?: typeof fetch;
 }
 
+const API_TIMEOUT_MS = 30_000;
+
 // Creates a repo under the authenticated user via the GitHub REST API.
-// Uses the "Create a repository for the authenticated user" endpoint.
 // https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user
 export async function createPrivateRepo(
   token: string,
@@ -38,7 +39,7 @@ export async function createPrivateRepo(
       private: options.private ?? true,
       auto_init: false,
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
   if (!res.ok) {
