@@ -3,8 +3,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// Internal seam — replaced in tests. Deliberately not exported to keep
-// the public surface small; tests import via `__test_only__` below.
+// Internal seam — replaced in tests via the deps parameter on resolveToken.
 async function ghAuthToken(): Promise<string> {
   const { stdout } = await execFileAsync("gh", ["auth", "token"]);
   return stdout.trim();
