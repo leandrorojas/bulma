@@ -3,10 +3,23 @@ import { spawn, SpawnOptions } from "node:child_process";
 export interface RunGitOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  // Values to redact from error messages (e.g. tokens, base64-encoded
+  // credentials). Each occurrence is replaced with "***".
+  redact?: string[];
 }
 
 export interface RunGitDeps {
   spawn?: typeof spawn;
+}
+
+function redactSecrets(text: string, secrets: string[]): string {
+  let result = text;
+  for (const s of secrets) {
+    if (s.length > 0) {
+      result = result.replaceAll(s, "***");
+    }
+  }
+  return result;
 }
 
 // Runs `git <args>`, resolving on exit 0 and rejecting otherwise with the
@@ -17,6 +30,8 @@ export function runGit(
   deps: RunGitDeps = {}
 ): Promise<void> {
   const doSpawn = deps.spawn ?? spawn;
+  const secrets = options.redact ?? [];
+
   return new Promise((resolve, reject) => {
     const spawnOptions: SpawnOptions = {
       cwd: options.cwd,
@@ -36,15 +51,17 @@ export function runGit(
     });
 
     child.on("error", (err) => {
-      reject(new Error(`git ${args.join(" ")} failed to start: ${err.message}`));
+      const safeArgs = redactSecrets(args.join(" "), secrets);
+      reject(new Error(`git ${safeArgs} failed to start: ${err.message}`));
     });
 
     child.on("close", (code) => {
       if (code === 0) {
         resolve();
       } else {
-        const tail = stderr.trim().slice(-500);
-        reject(new Error(`git ${args.join(" ")} exited with code ${code}\n${tail}`));
+        const safeArgs = redactSecrets(args.join(" "), secrets);
+        const safeTail = redactSecrets(stderr.trim().slice(-500), secrets);
+        reject(new Error(`git ${safeArgs} exited with code ${code}\n${safeTail}`));
       }
     });
   });

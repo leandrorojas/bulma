@@ -14,13 +14,19 @@ export interface ResolveTokenDeps {
   readGhToken?: () => Promise<string>;
 }
 
+const TOKEN_ENV_VARS = ["GITHUB_TOKEN", "GH_TOKEN"] as const;
+
 export async function resolveToken(deps: ResolveTokenDeps = {}): Promise<string> {
   const getEnv = deps.getEnv ?? ((name: string) => process.env[name]);
   const readGh = deps.readGhToken ?? ghAuthToken;
 
-  const fromEnv = getEnv("GITHUB_TOKEN") ?? getEnv("GH_TOKEN");
-  if (fromEnv && fromEnv.length > 0) {
-    return fromEnv;
+  // Check each env var individually — skip empty strings so that
+  // GITHUB_TOKEN="" doesn't shadow a valid GH_TOKEN.
+  for (const name of TOKEN_ENV_VARS) {
+    const val = getEnv(name);
+    if (val && val.length > 0) {
+      return val;
+    }
   }
 
   try {

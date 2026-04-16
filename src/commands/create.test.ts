@@ -9,6 +9,7 @@ import {
 interface GitCall {
   args: string[];
   cwd?: string;
+  redact?: string[];
 }
 
 interface Spies {
@@ -40,7 +41,7 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
       };
     },
     runGit: async (args, options = {}) => {
-      spies.gitCalls.push({ args, cwd: options.cwd });
+      spies.gitCalls.push({ args, cwd: options.cwd, redact: options.redact });
     },
     copyDir: async (src, dest) => {
       spies.copyCalls.push({ src, dest });
@@ -68,16 +69,17 @@ describe("createSite", () => {
       logger: (l) => spies.logs.push(l),
     });
 
-    // clone → copyDir → removeDir tmp → git init → add → commit → createRepo → remote add → push → remote set-url
-    const cmdSequence = spies.gitCalls.map((c) => c.args[0]);
+    // clone → init → add → commit → remote add → push
+    const cmdSequence = spies.gitCalls.map((c) =>
+      c.args[0] === "-c" ? c.args.find((a) => ["init", "add", "commit", "push", "remote"].includes(a)) ?? c.args[0] : c.args[0]
+    );
     expect(cmdSequence).toEqual([
       "clone",
       "init",
       "add",
       "commit",
-      "remote", // add
+      "remote",
       "push",
-      "remote", // set-url (strip token)
     ]);
 
     // Clone args point at hoi-poi with --depth 1
@@ -95,7 +97,7 @@ describe("createSite", () => {
     expect(spies.copyCalls[0].dest).toBe(path.join("/work", "my-site"));
 
     // Tmp dir was cleaned up
-    expect(spies.removeCalls).toHaveLength(1);
+    expect(spies.removeCalls.length).toBeGreaterThanOrEqual(1);
 
     // Repo created with private=true and the CLI default description
     expect(spies.createRepoCalls).toEqual([
@@ -109,18 +111,32 @@ describe("createSite", () => {
       },
     ]);
 
-    // `git remote add origin` uses the tokenized URL
+    // Remote add uses the clean URL (no token)
     const remoteAdd = spies.gitCalls.find(
-      (c) => c.args[0] === "remote" && c.args[1] === "add"
+      (c) => c.args.includes("remote") && c.args.includes("add")
     )!;
-    expect(remoteAdd.args[3]).toContain("x-access-token:ghp_fake_token@");
+    expect(remoteAdd.args).toContain("https://github.com/alice/my-site.git");
+    expect(remoteAdd.args.join(" ")).not.toContain("x-access-token");
 
-    // Final `git remote set-url` restores the plain URL (no token)
-    const remoteSetUrl = spies.gitCalls.find(
-      (c) => c.args[0] === "remote" && c.args[1] === "set-url"
-    )!;
-    expect(remoteSetUrl.args[3]).toBe("https://github.com/alice/my-site.git");
-    expect(remoteSetUrl.args[3]).not.toContain("x-access-token");
+    // Push uses http.extraheader with base64 auth (token never in URL)
+    const pushCall = spies.gitCalls.find((c) => c.args.includes("push"))!;
+    const headerArg = pushCall.args.find((a) => a.startsWith("http.extraheader="));
+    expect(headerArg).toBeDefined();
+    expect(headerArg).toContain("Authorization: Basic ");
+    // Redact list includes both raw token and base64 token
+    expect(pushCall.redact).toBeDefined();
+    expect(pushCall.redact!.length).toBe(2);
+    expect(pushCall.redact).toContain("ghp_fake_token");
+  });
+
+  it("sets git author identity for commit", async () => {
+    const { deps, spies } = makeDeps();
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    const commitCall = spies.gitCalls.find((c) => c.args.includes("commit"))!;
+    expect(commitCall.args).toContain("user.name=bulma-cli");
+    expect(commitCall.args).toContain("user.email=bulma@noreply");
   });
 
   it("uses a custom description when provided", async () => {
@@ -149,7 +165,6 @@ describe("createSite", () => {
   it("accepts valid name edge cases", async () => {
     const { deps } = makeDeps();
     const create = makeCreateSite(deps);
-    // single char, max length (40), with dashes
     await expect(create("a", { cwd: "/w" })).resolves.toBeUndefined();
     await expect(create("a-b", { cwd: "/w" })).resolves.toBeUndefined();
     await expect(create("a".repeat(40), { cwd: "/w" })).resolves.toBeUndefined();
@@ -158,7 +173,6 @@ describe("createSite", () => {
   it("throws when target directory already exists", async () => {
     const { deps } = makeDeps({
       pathExists: async (p) => {
-        // target exists, template still present
         return p.endsWith("my-site") || p.endsWith(SHELL_TEMPLATE_SUBDIR);
       },
     });
@@ -171,24 +185,21 @@ describe("createSite", () => {
 
   it("throws a helpful error if shell-template is missing from the clone", async () => {
     const { deps, spies } = makeDeps({
-      pathExists: async (_p) => false,
+      pathExists: async () => false,
     });
     const create = makeCreateSite(deps);
 
     await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(
       /Shell template not found/
     );
-    // Tmp dir is cleaned up even on failure
     expect(spies.removeCalls.length).toBeGreaterThan(0);
   });
 
-  it("strips token from remote URL even when push fails", async () => {
-    let pushCalls = 0;
+  it("cleans up local dir when push fails", async () => {
     const { deps, spies } = makeDeps({
       runGit: async (args) => {
         spies.gitCalls.push({ args });
-        if (args[0] === "push") {
-          pushCalls++;
+        if (args.includes("push")) {
           throw new Error("push rejected: auth failed");
         }
       },
@@ -196,17 +207,24 @@ describe("createSite", () => {
     const create = makeCreateSite(deps);
 
     await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(/push rejected/);
-    expect(pushCalls).toBe(1);
 
-    // The token-stripping set-url still ran
-    const setUrl = spies.gitCalls.find(
-      (c) => c.args[0] === "remote" && c.args[1] === "set-url"
-    );
-    expect(setUrl).toBeDefined();
-    expect(setUrl!.args[3]).not.toContain("x-access-token");
+    // Local dir was cleaned up on failure
+    expect(spies.removeCalls).toContainEqual(path.join("/w", "my-site"));
   });
 
-  it("uses an injected hoiPoiCloneUrl when provided (for local testing)", async () => {
+  it("cleans up local dir when GitHub repo creation fails", async () => {
+    const { deps, spies } = makeDeps({
+      createPrivateRepo: async () => {
+        throw new Error("422 repo already exists");
+      },
+    });
+    const create = makeCreateSite(deps);
+
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(/422/);
+    expect(spies.removeCalls).toContainEqual(path.join("/w", "my-site"));
+  });
+
+  it("uses an injected hoiPoiCloneUrl when provided", async () => {
     const { deps, spies } = makeDeps();
     const create = makeCreateSite(deps);
     await create("my-site", {

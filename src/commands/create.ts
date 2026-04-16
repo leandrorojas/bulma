@@ -90,45 +90,56 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       });
     }
 
-    // 5. Initialize local repo + initial commit
+    // 5. Initialize local repo + initial commit.
+    // Set a default git identity so this works in pristine / CI environments
+    // where user.name and user.email may not be configured.
     log("→ Initializing local git repo");
     await deps.runGit(["init", "-b", "main"], { cwd: targetDir });
-    await deps.runGit(["add", "-A"], { cwd: targetDir });
     await deps.runGit(
-      ["commit", "-m", "🩲 scaffold from hoi-poi shell-template"],
+      ["-c", "user.name=bulma-cli", "-c", "user.email=bulma@noreply", "add", "-A"],
+      { cwd: targetDir }
+    );
+    await deps.runGit(
+      ["-c", "user.name=bulma-cli", "-c", "user.email=bulma@noreply",
+       "commit", "-m", "🩲 scaffold from hoi-poi shell-template"],
       { cwd: targetDir }
     );
 
-    // 6. Create private GitHub repo (first external side effect)
+    // 6. Create private GitHub repo (first external side effect).
+    // If this or any subsequent step fails, clean up the local directory
+    // so the user can re-run from a clean state. (The remote GitHub repo,
+    // if created, will remain as an empty orphan — manual cleanup.)
     log(`→ Creating private GitHub repo ${siteName}`);
-    const created: CreatedRepo = await deps.createPrivateRepo(token, siteName, {
-      description:
-        options.description ?? "Micro-frontend site scaffolded from hoi-poi",
-      private: true,
-    });
+    let created: CreatedRepo;
+    try {
+      created = await deps.createPrivateRepo(token, siteName, {
+        description:
+          options.description ?? "Micro-frontend site scaffolded from hoi-poi",
+        private: true,
+      });
+    } catch (err) {
+      await deps.removeDir(targetDir).catch(() => {});
+      throw err;
+    }
 
-    // 7. Push. Embed token in the remote URL for the push only, then strip
-    // it back to the clean URL so it doesn't end up in .git/config on disk
-    // for subsequent pushes.
+    // 7. Push using http.extraheader for one-shot auth.
+    // The token never touches .git/config on disk.
     log(`→ Pushing to ${created.htmlUrl}`);
-    const authedUrl = created.cloneUrl.replace(
-      "https://",
-      `https://x-access-token:${token}@`
-    );
-    await deps.runGit(["remote", "add", "origin", authedUrl], {
+    await deps.runGit(["remote", "add", "origin", created.cloneUrl], {
       cwd: targetDir,
     });
+    const basicAuth = Buffer.from(`x-access-token:${token}`).toString("base64");
     try {
-      await deps.runGit(["push", "-u", "origin", "main"], { cwd: targetDir });
-    } finally {
-      // Always strip the token out of the remote URL, even on push failure.
-      await deps
-        .runGit(["remote", "set-url", "origin", created.cloneUrl], {
-          cwd: targetDir,
-        })
-        .catch(() => {
-          /* best-effort; don't mask original error */
-        });
+      await deps.runGit(
+        ["-c", `http.extraheader=Authorization: Basic ${basicAuth}`,
+         "push", "-u", "origin", "main"],
+        { cwd: targetDir, redact: [basicAuth, token] }
+      );
+    } catch (err) {
+      // Push failed — clean up local dir so user can retry cleanly.
+      // The remote GitHub repo may exist as an empty orphan.
+      await deps.removeDir(targetDir).catch(() => {});
+      throw err;
     }
 
     log(`✓ ${siteName} created at ${created.htmlUrl}`);

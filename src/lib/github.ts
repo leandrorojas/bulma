@@ -38,6 +38,7 @@ export async function createPrivateRepo(
       private: options.private ?? true,
       auto_init: false,
     }),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

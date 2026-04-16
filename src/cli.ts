@@ -32,5 +32,12 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 if (require.main === module) {
-  main(process.argv).then((code) => process.exit(code));
+  main(process.argv)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      process.stderr.write(
+        `Fatal: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+      process.exit(1);
+    });
 }

@@ -35,6 +35,16 @@ describe("resolveToken", () => {
     expect(token).toBe("ghp_gh_cli_token");
   });
 
+  it("skips empty GITHUB_TOKEN and picks GH_TOKEN", async () => {
+    const token = await resolveToken({
+      getEnv: (n) => (n === "GITHUB_TOKEN" ? "" : n === "GH_TOKEN" ? "ghp_from_gh" : undefined),
+      readGhToken: async () => {
+        throw new Error("should not be called");
+      },
+    });
+    expect(token).toBe("ghp_from_gh");
+  });
+
   it("throws an informative error when gh fallback fails", async () => {
     await expect(
       resolveToken({
