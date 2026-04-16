@@ -95,7 +95,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     await deps.runGit(["init", "-b", "main"], { cwd: targetDir });
     await deps.runGit(["add", "-A"], { cwd: targetDir });
     await deps.runGit(
-      ["commit", "-m", "🌱 scaffold from hoi-poi shell-template"],
+      ["commit", "-m", "🩲 scaffold from hoi-poi shell-template"],
       { cwd: targetDir }
     );
 
