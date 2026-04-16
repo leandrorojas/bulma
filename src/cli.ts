@@ -27,8 +27,7 @@ export async function main(argv: string[]): Promise<number> {
     });
 
   await program.parseAsync(argv);
-  const code = process.exitCode ?? 0;
-  return typeof code === "string" ? parseInt(code, 10) || 1 : code;
+  return Number(process.exitCode ?? 0);
 }
 
 if (require.main === module) {

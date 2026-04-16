@@ -83,7 +83,12 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       }
 
       log(`→ Scaffolding ${targetDir}`);
-      await deps.copyDir(templateSrc, targetDir);
+      try {
+        await deps.copyDir(templateSrc, targetDir);
+      } catch (err) {
+        await deps.removeDir(targetDir).catch(() => {});
+        throw err;
+      }
     } finally {
       await deps.removeDir(tmpDir).catch(() => {
         /* best-effort cleanup */
@@ -95,10 +100,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     // where user.name and user.email may not be configured.
     log("→ Initializing local git repo");
     await deps.runGit(["init", "-b", "main"], { cwd: targetDir });
-    await deps.runGit(
-      ["-c", "user.name=bulma-cli", "-c", "user.email=bulma@noreply", "add", "-A"],
-      { cwd: targetDir }
-    );
+    await deps.runGit(["add", "-A"], { cwd: targetDir });
     await deps.runGit(
       ["-c", "user.name=bulma-cli", "-c", "user.email=bulma@noreply",
        "commit", "-m", "🩲 scaffold from hoi-poi shell-template"],

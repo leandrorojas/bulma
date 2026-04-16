@@ -67,16 +67,16 @@ describe("runGit", () => {
       code: 1,
       stderr: "remote: Invalid username or password for https://x-access-token:ghp_secret123@github.com",
     });
-    const err = runGit(
-      ["-c", "http.extraheader=Authorization: Basic c2VjcmV0", "push"],
-      { redact: ["ghp_secret123", "c2VjcmV0"] },
-      { spawn: fake }
-    );
-    await expect(err).rejects.toThrow(/\*\*\*/);
     try {
-      await err;
+      await runGit(
+        ["-c", "http.extraheader=Authorization: Basic c2VjcmV0", "push"],
+        { redact: ["ghp_secret123", "c2VjcmV0"] },
+        { spawn: fake }
+      );
+      fail("expected runGit to throw");
     } catch (e) {
       const msg = (e as Error).message;
+      expect(msg).toContain("***");
       expect(msg).not.toContain("ghp_secret123");
       expect(msg).not.toContain("c2VjcmV0");
     }
