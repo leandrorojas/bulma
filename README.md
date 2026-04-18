@@ -1,4 +1,4 @@
-# Bulma 🌱
+# Bulma 🩲
 
 **B**uild **U**ltra-**L**ight **M**icro-**A**pps — a CLI scaffolding tool for the [Hoi-Poi](https://github.com/leandrorojas/hoi-poi) micro-frontend platform.
 
