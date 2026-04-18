@@ -73,7 +73,7 @@ describe("runGit", () => {
         { redact: ["ghp_secret123", "c2VjcmV0"] },
         { spawn: fake }
       );
-      fail("expected runGit to throw");
+      throw new Error("expected runGit to throw");
     } catch (e) {
       const msg = (e as Error).message;
       expect(msg).toContain("***");
