@@ -1,13 +1,44 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveToken } from "../lib/auth";
+import { resolveToken, resolveVercelToken, getVercelTeamId } from "../lib/auth";
 import { createPrivateRepo, CreatedRepo } from "../lib/github";
 import { runGit } from "../lib/git";
 import { copyDir, pathExists, removeDir } from "../lib/fs-utils";
+import {
+  checkGitHubAppInstalled,
+  createVercelProject,
+  pollDeploymentReady,
+  getAccountSlug,
+  CreatedVercelProject,
+  VercelDeployment,
+  DeploymentTimeoutError,
+} from "../lib/vercel";
 
 export const HOI_POI_CLONE_URL = "https://github.com/leandrorojas/hoi-poi.git";
 export const SHELL_TEMPLATE_SUBDIR = "shell-template";
+
+// Build settings for Vercel projects scaffolded from the hoi-poi shell-template.
+// Mirrors shell-template/webpack.config.js (output → dist) and package.json
+// (build script → webpack --mode production).
+const VERCEL_BUILD_COMMAND = "npm run build";
+const VERCEL_OUTPUT_DIRECTORY = "dist";
+const VERCEL_INSTALL_COMMAND = "npm install";
+const VERCEL_NODE_VERSION = "20.x";
+const VERCEL_DEPLOY_TIMEOUT_MS = 5 * 60 * 1000;
+const VERCEL_FALLBACK_DASHBOARD = "https://vercel.com/dashboard";
+
+const VERCEL_JSON_CONTENT =
+  JSON.stringify(
+    {
+      buildCommand: VERCEL_BUILD_COMMAND,
+      outputDirectory: VERCEL_OUTPUT_DIRECTORY,
+      installCommand: VERCEL_INSTALL_COMMAND,
+      framework: null,
+    },
+    null,
+    2
+  ) + "\n";
 
 // GitHub repo name rules: 1–100 chars, alphanumerics + `-`, `_`, `.`
 // Can't start/end with special chars. We apply a stricter lowercase
@@ -19,15 +50,23 @@ export interface CreateSiteOptions {
   cwd?: string;
   hoiPoiCloneUrl?: string;
   logger?: (line: string) => void;
+  skipVercel?: boolean;
 }
 
 export interface CreateSiteDeps {
   resolveToken: typeof resolveToken;
+  resolveVercelToken: typeof resolveVercelToken;
+  getVercelTeamId: typeof getVercelTeamId;
   createPrivateRepo: typeof createPrivateRepo;
+  checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
+  createVercelProject: typeof createVercelProject;
+  pollDeploymentReady: typeof pollDeploymentReady;
+  getAccountSlug: typeof getAccountSlug;
   runGit: typeof runGit;
   copyDir: typeof copyDir;
   removeDir: typeof removeDir;
   pathExists: typeof pathExists;
+  writeFile: (filePath: string, content: string) => Promise<void>;
   mkdtemp: (prefix: string) => Promise<string>;
 }
 
@@ -35,13 +74,36 @@ export interface CreateSiteDeps {
 // Tests build their own bundle with fakes.
 export const realDeps: CreateSiteDeps = {
   resolveToken,
+  resolveVercelToken,
+  getVercelTeamId,
   createPrivateRepo,
+  checkGitHubAppInstalled,
+  createVercelProject,
+  pollDeploymentReady,
+  getAccountSlug,
   runGit,
   copyDir,
   removeDir,
   pathExists,
+  writeFile: (filePath, content) => fs.writeFile(filePath, content, "utf8"),
   mkdtemp: (prefix) => fs.mkdtemp(prefix),
 };
+
+// Extracts the GitHub owner from an html_url like
+// "https://github.com/alice/my-site". Throws if the URL doesn't match.
+function parseGitHubOwner(htmlUrl: string): string {
+  const match = /^https:\/\/github\.com\/([^/]+)\/[^/]+\/?$/.exec(htmlUrl);
+  if (!match) {
+    throw new Error(`Cannot parse GitHub owner from URL: ${htmlUrl}`);
+  }
+  return match[1];
+}
+
+// Discriminated union — when enabled is true, token is guaranteed non-null,
+// so the rest of the flow can drop the `!` non-null assertions.
+type VercelContext =
+  | { enabled: false }
+  | { enabled: true; token: string; teamId: string | undefined };
 
 export function makeCreateSite(deps: CreateSiteDeps) {
   return async function createSite(
@@ -65,11 +127,24 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw new Error(`Target directory already exists: ${targetDir}`);
     }
 
-    // 3. Resolve token before any side effects
+    // 3. Resolve tokens before any side effects so auth issues fail fast.
     log("→ Resolving GitHub token");
     const token = await deps.resolveToken();
 
-    // 4. Clone hoi-poi shallow into tmp, copy shell-template into target
+    let vercel: VercelContext = { enabled: false };
+    if (!options.skipVercel) {
+      log("→ Resolving Vercel token");
+      const vercelToken = await deps.resolveVercelToken();
+      vercel = {
+        enabled: true,
+        token: vercelToken,
+        teamId: deps.getVercelTeamId(),
+      };
+    }
+
+    // 4. Clone hoi-poi shallow into tmp, copy shell-template into target.
+    // The inner cleanup catch covers both copyDir and the vercel.json write
+    // so a partial scaffold is always rolled back.
     const tmpDir = await deps.mkdtemp(path.join(os.tmpdir(), "bulma-"));
     try {
       log(`→ Cloning ${cloneUrl}`);
@@ -85,6 +160,12 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       log(`→ Scaffolding ${targetDir}`);
       try {
         await deps.copyDir(templateSrc, targetDir);
+        if (vercel.enabled) {
+          await deps.writeFile(
+            path.join(targetDir, "vercel.json"),
+            VERCEL_JSON_CONTENT
+          );
+        }
       } catch (err) {
         await deps.removeDir(targetDir).catch(() => {});
         throw err;
@@ -95,9 +176,9 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       });
     }
 
-    // 5. Initialize local repo + initial commit.
-    // Set a default git identity so this works in pristine / CI environments
-    // where user.name and user.email may not be configured.
+    // 5. Initialize local repo + initial commit. Set a default git identity so
+    // this works in pristine / CI environments where user.name and user.email
+    // may not be configured.
     log("→ Initializing local git repo");
     await deps.runGit(["init", "-b", "main"], { cwd: targetDir });
     await deps.runGit(["add", "-A"], { cwd: targetDir });
@@ -144,7 +225,89 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw err;
     }
 
+    if (!vercel.enabled) {
+      log(`✓ ${siteName} created at ${created.htmlUrl} (Vercel skipped)`);
+      return;
+    }
+
+    // 8. Vercel project. The repo must exist with code on `main` before we
+    // ask Vercel to link, so the first deployment has something to build.
+    const owner = parseGitHubOwner(created.htmlUrl);
+    log("→ Verifying Vercel ↔ GitHub integration");
+    const installed = await deps.checkGitHubAppInstalled(
+      vercel.token,
+      owner,
+      { teamId: vercel.teamId }
+    );
+    if (!installed) {
+      throw new Error(
+        `Vercel GitHub App not installed (or restricted) for "${owner}". ` +
+          `Install it with All-repos access at https://vercel.com/integrations/github, ` +
+          `then either re-run with --skip-vercel, or delete ${created.htmlUrl} ` +
+          `and re-run to redo the whole flow.`
+      );
+    }
+
+    // 9. Resolve the Vercel account slug for dashboard URLs. Best-effort:
+    // if the lookup fails, fall back to the generic dashboard so we never
+    // surface a 404 link to the user.
+    let accountSlug: string | undefined;
+    try {
+      accountSlug = await deps.getAccountSlug(vercel.token, { teamId: vercel.teamId });
+    } catch {
+      accountSlug = undefined;
+    }
+    const dashboard = accountSlug
+      ? `https://vercel.com/${accountSlug}/${siteName}`
+      : VERCEL_FALLBACK_DASHBOARD;
+
+    // On Vercel-create failure: don't wipe the local dir — it's already in
+    // sync with the GitHub repo, and the user can retry just the Vercel step.
+    log(`→ Creating Vercel project ${siteName}`);
+    const project: CreatedVercelProject = await deps.createVercelProject(
+      vercel.token,
+      {
+        name: siteName,
+        gitRepoFullName: `${owner}/${siteName}`,
+        buildCommand: VERCEL_BUILD_COMMAND,
+        outputDirectory: VERCEL_OUTPUT_DIRECTORY,
+        installCommand: VERCEL_INSTALL_COMMAND,
+        nodeVersion: VERCEL_NODE_VERSION,
+      },
+      { teamId: vercel.teamId }
+    );
+
+    // 10. Poll the first production deployment. Treat timeout as a warning,
+    // not a fatal — the project is created and Vercel will keep building;
+    // the user can check the dashboard.
+    log("→ Waiting for first production deployment (up to 5 min)");
+    let deployment: VercelDeployment | undefined;
+    try {
+      deployment = await deps.pollDeploymentReady(
+        vercel.token,
+        project.id,
+        {
+          timeoutMs: VERCEL_DEPLOY_TIMEOUT_MS,
+          teamId: vercel.teamId,
+        }
+      );
+    } catch (err) {
+      // Both branches surface the dashboard URL — the project + repo are in
+      // place either way, and the user needs the link regardless of whether
+      // we treat this as fatal (DeploymentFailedError) or recoverable (timeout).
+      if (err instanceof DeploymentTimeoutError) {
+        log(`⚠ First deployment did not complete in 5 min. Check ${dashboard}`);
+      } else {
+        log(`⚠ Deployment failed. Check ${dashboard}`);
+        throw err;
+      }
+    }
+
     log(`✓ ${siteName} created at ${created.htmlUrl}`);
+    if (deployment) {
+      log(`  Production: https://${deployment.url}`);
+      log(`  Previews: enabled per branch (Vercel auto)`);
+    }
   };
 }
 
