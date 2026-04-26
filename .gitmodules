@@ -1,0 +1,3 @@
+[submodule "senzu"]
+	path = senzu
+	url = https://github.com/leandrorojas/senzu.git

@@ -40,6 +40,18 @@ npm run build
 npm test
 ```
 
+## Contributing
+
+This repo includes a private submodule (`senzu`) for shared AI agent config. Cloning bulma for development requires access to the [senzu repo](https://github.com/leandrorojas/senzu) and an SSH key configured against GitHub:
+
+```bash
+git clone --recurse-submodules git@github.com:leandrorojas/bulma.git
+# or, after a regular clone:
+git submodule update --init
+```
+
+End users installing via `npm` / `npx` are not affected — the submodule is only consumed by maintainers and contributors.
+
 ## License
 
 MIT
