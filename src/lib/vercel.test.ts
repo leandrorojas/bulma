@@ -409,3 +409,53 @@ describe("getLatestProductionDeployment defensive shape", () => {
     expect(dep).toBeNull();
   });
 });
+
+describe("project ID validation", () => {
+  it("rejects malformed project IDs in getLatestProductionDeployment before any fetch", async () => {
+    const calls: unknown[] = [];
+    const fake = (async (...args: unknown[]) => {
+      calls.push(args);
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      getLatestProductionDeployment("t", "evil/../path", {}, { fetch: fake })
+    ).rejects.toThrow(/Invalid Vercel project ID/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects malformed project IDs in pollDeploymentReady before any fetch", async () => {
+    const fake = (async () => {
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch;
+    await expect(
+      pollDeploymentReady(
+        "t",
+        "../escape",
+        { timeoutMs: 1_000, intervalMs: 100 },
+        { fetch: fake }
+      )
+    ).rejects.toThrow(/Invalid Vercel project ID/);
+  });
+
+  it("rejects malformed project IDs returned by createVercelProject", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { id: "prj_../etc/passwd", name: "x" },
+    });
+    await expect(
+      createVercelProject(
+        "t",
+        {
+          name: "x",
+          gitRepoFullName: "a/x",
+          buildCommand: "b",
+          outputDirectory: "o",
+          installCommand: "i",
+        },
+        {},
+        { fetch: fake }
+      )
+    ).rejects.toThrow(/Invalid Vercel project ID/);
+  });
+});

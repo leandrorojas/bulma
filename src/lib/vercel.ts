@@ -6,6 +6,17 @@
 const API_BASE = "https://api.vercel.com";
 const API_TIMEOUT_MS = 30_000;
 
+// Vercel project IDs are `prj_` + base62 chars in practice. We accept the
+// broader URL-safe set since the analyzer treats API responses as tainted —
+// validating at the boundary lets us pass the ID into request URLs safely.
+const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function assertValidProjectId(projectId: string): void {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new Error(`Invalid Vercel project ID: ${projectId}`);
+  }
+}
+
 export interface VercelClientDeps {
   fetch?: typeof fetch;
 }
@@ -122,6 +133,7 @@ export async function createVercelProject(
     "create project"
   );
   const data = (await res.json()) as { id: string; name: string };
+  assertValidProjectId(data.id);
   return { id: data.id, name: data.name };
 }
 
@@ -152,6 +164,7 @@ export async function getLatestProductionDeployment(
   scope: VercelTeamScope = {},
   deps: VercelClientDeps = {}
 ): Promise<VercelDeployment | null> {
+  assertValidProjectId(projectId);
   const doFetch = deps.fetch ?? fetch;
   const url = withTeam(
     `${API_BASE}/v6/deployments?projectId=${encodeURIComponent(projectId)}&target=production&limit=1`,
@@ -197,6 +210,36 @@ export class DeploymentFailedError extends Error {
   }
 }
 
+function formatUnknownError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "unknown error";
+  }
+}
+
+function buildTimeoutMessage(timeoutMs: number, lastError: unknown): string {
+  const base = `Deployment did not become READY within ${timeoutMs}ms`;
+  if (!lastError) return base;
+  return `${base} (last error: ${formatUnknownError(lastError)})`;
+}
+
+// Returns the deployment if it's READY, throws DeploymentFailedError on
+// terminal failure, returns null on any non-terminal state (still pending).
+function classifyDeployment(deployment: VercelDeployment | null): VercelDeployment | null {
+  if (!deployment) return null;
+  if (deployment.state === "READY") return deployment;
+  if (deployment.state === "ERROR" || deployment.state === "CANCELED") {
+    throw new DeploymentFailedError(
+      `Deployment ${deployment.uid} ended in ${deployment.state}`,
+      deployment.state
+    );
+  }
+  return null;
+}
+
 // Polls until the latest production deployment reaches READY. Transient
 // fetch errors (network blip, 429, 5xx) are swallowed and the loop keeps
 // polling until the deadline. Only DeploymentFailedError (terminal state)
@@ -208,6 +251,7 @@ export async function pollDeploymentReady(
   options: PollDeploymentOptions,
   deps: VercelClientDeps = {}
 ): Promise<VercelDeployment> {
+  assertValidProjectId(projectId);
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ??
@@ -224,15 +268,8 @@ export async function pollDeploymentReady(
         { teamId: options.teamId },
         deps
       );
-      if (deployment) {
-        if (deployment.state === "READY") return deployment;
-        if (deployment.state === "ERROR" || deployment.state === "CANCELED") {
-          throw new DeploymentFailedError(
-            `Deployment ${deployment.uid} ended in ${deployment.state}`,
-            deployment.state
-          );
-        }
-      }
+      const ready = classifyDeployment(deployment);
+      if (ready) return ready;
       lastError = undefined;
     } catch (err) {
       if (err instanceof DeploymentFailedError) throw err;
@@ -240,10 +277,5 @@ export async function pollDeploymentReady(
     }
     await sleep(interval);
   }
-  const reason = lastError
-    ? ` (last error: ${lastError instanceof Error ? lastError.message : String(lastError)})`
-    : "";
-  throw new DeploymentTimeoutError(
-    `Deployment did not become READY within ${options.timeoutMs}ms${reason}`
-  );
+  throw new DeploymentTimeoutError(buildTimeoutMessage(options.timeoutMs, lastError));
 }
