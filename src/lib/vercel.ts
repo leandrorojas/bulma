@@ -239,8 +239,11 @@ export async function updateProjectNodeVersion(
 ): Promise<void> {
   assertValidProjectId(projectId);
   const doFetch = deps.fetch ?? fetch;
+  // projectId is regex-validated above (assertValidProjectId) and the result
+  // is URL-encoded — Sonar's tssecurity:S8476 doesn't recognize the validator
+  // as a sanitizer, so suppress the false positive here.
   const url = withTeam(
-    `${API_BASE}/v9/projects/${encodeURIComponent(projectId)}`,
+    `${API_BASE}/v9/projects/${encodeURIComponent(projectId)}`, // NOSONAR S8476
     scope.teamId
   );
   await vercelFetch(
