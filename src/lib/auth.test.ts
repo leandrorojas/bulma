@@ -1,4 +1,4 @@
-import { resolveToken } from "./auth";
+import { resolveToken, resolveVercelToken, getVercelTeamId } from "./auth";
 
 describe("resolveToken", () => {
   it("returns GITHUB_TOKEN when set", async () => {
@@ -63,5 +63,76 @@ describe("resolveToken", () => {
         readGhToken: async () => "",
       })
     ).rejects.toThrow(/No GitHub token available.*gh auth token returned empty/);
+  });
+});
+
+describe("resolveVercelToken", () => {
+  it("returns VERCEL_TOKEN env when set", async () => {
+    const token = await resolveVercelToken({
+      getEnv: (n) => (n === "VERCEL_TOKEN" ? "vcp_env" : undefined),
+      readVercelAuthFile: async () => {
+        throw new Error("should not be called");
+      },
+    });
+    expect(token).toBe("vcp_env");
+  });
+
+  it("falls back to vercel CLI auth.json when env is missing", async () => {
+    const token = await resolveVercelToken({
+      getEnv: () => undefined,
+      readVercelAuthFile: async () => JSON.stringify({ token: "vcp_from_file" }),
+    });
+    expect(token).toBe("vcp_from_file");
+  });
+
+  it("treats empty env as missing and falls back to file", async () => {
+    const token = await resolveVercelToken({
+      getEnv: () => "",
+      readVercelAuthFile: async () => JSON.stringify({ token: "vcp_from_file" }),
+    });
+    expect(token).toBe("vcp_from_file");
+  });
+
+  it("throws when file is unreadable", async () => {
+    await expect(
+      resolveVercelToken({
+        getEnv: () => undefined,
+        readVercelAuthFile: async () => {
+          throw new Error("ENOENT");
+        },
+      })
+    ).rejects.toThrow(/No Vercel token available.*ENOENT/);
+  });
+
+  it("throws when file lacks a token field", async () => {
+    await expect(
+      resolveVercelToken({
+        getEnv: () => undefined,
+        readVercelAuthFile: async () => JSON.stringify({ userId: "u_1" }),
+      })
+    ).rejects.toThrow(/No Vercel token available.*missing 'token' field/);
+  });
+
+  it("throws when file token is empty string", async () => {
+    await expect(
+      resolveVercelToken({
+        getEnv: () => undefined,
+        readVercelAuthFile: async () => JSON.stringify({ token: "" }),
+      })
+    ).rejects.toThrow(/No Vercel token available.*missing 'token' field/);
+  });
+});
+
+describe("getVercelTeamId", () => {
+  it("returns the env value when set", () => {
+    expect(getVercelTeamId({ getEnv: () => "team_abc" })).toBe("team_abc");
+  });
+
+  it("returns undefined when unset", () => {
+    expect(getVercelTeamId({ getEnv: () => undefined })).toBeUndefined();
+  });
+
+  it("returns undefined when empty", () => {
+    expect(getVercelTeamId({ getEnv: () => "" })).toBeUndefined();
   });
 });

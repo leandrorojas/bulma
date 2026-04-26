@@ -15,16 +15,22 @@ export async function main(argv: string[]): Promise<number> {
     .command("create <site-name>")
     .description("Scaffold a new micro-frontend site from the hoi-poi shell-template")
     .option("-d, --description <text>", "Repo description")
-    .action(async (siteName: string, options: { description?: string }) => {
-      try {
-        await createSite(siteName, options);
-      } catch (err) {
-        process.stderr.write(
-          `Error: ${err instanceof Error ? err.message : String(err)}\n`
-        );
-        process.exitCode = 1;
+    .option("--skip-vercel", "Skip Vercel project setup (offline / dev only)")
+    .action(
+      async (
+        siteName: string,
+        options: { description?: string; skipVercel?: boolean }
+      ) => {
+        try {
+          await createSite(siteName, options);
+        } catch (err) {
+          process.stderr.write(
+            `Error: ${err instanceof Error ? err.message : String(err)}\n`
+          );
+          process.exitCode = 1;
+        }
       }
-    });
+    );
 
   await program.parseAsync(argv);
   return Number(process.exitCode ?? 0);

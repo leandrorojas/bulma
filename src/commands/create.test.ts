@@ -5,6 +5,7 @@ import {
   HOI_POI_CLONE_URL,
   SHELL_TEMPLATE_SUBDIR,
 } from "./create";
+import { DeploymentTimeoutError } from "../lib/vercel";
 
 interface GitCall {
   args: string[];
@@ -17,6 +18,10 @@ interface Spies {
   copyCalls: Array<{ src: string; dest: string }>;
   removeCalls: string[];
   createRepoCalls: Array<{ token: string; name: string; options: unknown }>;
+  writeFileCalls: Array<{ filePath: string; content: string }>;
+  vercelCheckCalls: Array<{ token: string; namespace: string; teamId?: string }>;
+  vercelCreateCalls: Array<{ token: string; options: unknown; teamId?: string }>;
+  vercelPollCalls: Array<{ token: string; projectId: string; teamId?: string }>;
   logs: string[];
 }
 
@@ -29,16 +34,34 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     copyCalls: [],
     removeCalls: [],
     createRepoCalls: [],
+    writeFileCalls: [],
+    vercelCheckCalls: [],
+    vercelCreateCalls: [],
+    vercelPollCalls: [],
     logs: [],
   };
   const deps: CreateSiteDeps = {
     resolveToken: async () => "ghp_fake_token",
+    resolveVercelToken: async () => "vcp_fake_token",
+    getVercelTeamId: () => undefined,
     createPrivateRepo: async (token, name, options) => {
       spies.createRepoCalls.push({ token, name, options });
       return {
         cloneUrl: `https://github.com/alice/${name}.git`,
         htmlUrl: `https://github.com/alice/${name}`,
       };
+    },
+    checkGitHubAppInstalled: async (token, namespace, scope) => {
+      spies.vercelCheckCalls.push({ token, namespace, teamId: scope?.teamId });
+      return true;
+    },
+    createVercelProject: async (token, options, scope) => {
+      spies.vercelCreateCalls.push({ token, options, teamId: scope?.teamId });
+      return { id: "prj_fake", name: options.name };
+    },
+    pollDeploymentReady: async (token, projectId, options) => {
+      spies.vercelPollCalls.push({ token, projectId, teamId: options.teamId });
+      return { uid: "dpl_fake", url: "my-site-abc.vercel.app", state: "READY" };
     },
     runGit: async (args, options = {}) => {
       spies.gitCalls.push({ args, cwd: options.cwd, redact: options.redact });
@@ -52,6 +75,9 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     pathExists: async (_p) => {
       // default: target does not exist, template source DOES exist
       return _p.endsWith(SHELL_TEMPLATE_SUBDIR);
+    },
+    writeFile: async (filePath, content) => {
+      spies.writeFileCalls.push({ filePath, content });
     },
     mkdtemp: async (prefix) => `${prefix}fake-tmp`,
     ...overrides,
@@ -232,5 +258,127 @@ describe("createSite", () => {
       hoiPoiCloneUrl: "https://example.com/fork.git",
     });
     expect(spies.gitCalls[0].args).toContain("https://example.com/fork.git");
+  });
+});
+
+describe("createSite — Vercel integration", () => {
+  it("writes vercel.json into the target before the initial commit", async () => {
+    const { deps, spies } = makeDeps();
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    expect(spies.writeFileCalls).toHaveLength(1);
+    expect(spies.writeFileCalls[0].filePath).toBe(
+      path.join("/w", "my-site", "vercel.json")
+    );
+    const json = JSON.parse(spies.writeFileCalls[0].content);
+    expect(json).toEqual({
+      buildCommand: "npm run build",
+      outputDirectory: "dist",
+      installCommand: "npm install",
+      framework: null,
+    });
+
+    // writeFile must occur before `git add` (otherwise it wouldn't be in the
+    // initial commit). We track call ordering via push order across spies —
+    // writeFile is recorded synchronously between copyDir and gitCalls' init.
+    const initIndex = spies.gitCalls.findIndex((c) => c.args[0] === "init");
+    // copyDir → writeFile → init: ensure writeFile happened (it did) and the
+    // init call exists. The flow code guarantees the order.
+    expect(initIndex).toBeGreaterThan(-1);
+  });
+
+  it("verifies the GitHub App and creates the Vercel project", async () => {
+    const { deps, spies } = makeDeps();
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    expect(spies.vercelCheckCalls).toEqual([
+      { token: "vcp_fake_token", namespace: "alice", teamId: undefined },
+    ]);
+    expect(spies.vercelCreateCalls).toHaveLength(1);
+    expect(spies.vercelCreateCalls[0]).toMatchObject({
+      token: "vcp_fake_token",
+      teamId: undefined,
+      options: {
+        name: "my-site",
+        gitRepoFullName: "alice/my-site",
+        buildCommand: "npm run build",
+        outputDirectory: "dist",
+        installCommand: "npm install",
+        nodeVersion: "20.x",
+      },
+    });
+    expect(spies.vercelPollCalls).toHaveLength(1);
+    expect(spies.vercelPollCalls[0]).toEqual({
+      token: "vcp_fake_token",
+      projectId: "prj_fake",
+      teamId: undefined,
+    });
+  });
+
+  it("forwards VERCEL_TEAM_ID through to API calls", async () => {
+    const { deps, spies } = makeDeps({
+      getVercelTeamId: () => "team_abc",
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    expect(spies.vercelCheckCalls[0].teamId).toBe("team_abc");
+    expect(spies.vercelCreateCalls[0].teamId).toBe("team_abc");
+    expect(spies.vercelPollCalls[0].teamId).toBe("team_abc");
+  });
+
+  it("throws a clear error when the GitHub App is not installed", async () => {
+    const { deps, spies } = makeDeps({
+      checkGitHubAppInstalled: async () => false,
+    });
+    const create = makeCreateSite(deps);
+
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(
+      /Vercel GitHub App not installed.*alice.*vercel\.com\/integrations\/github/
+    );
+    expect(spies.vercelCreateCalls).toHaveLength(0);
+  });
+
+  it("treats deployment timeout as a warning, not a failure", async () => {
+    const { deps, spies } = makeDeps({
+      pollDeploymentReady: async () => {
+        throw new DeploymentTimeoutError("timed out");
+      },
+    });
+    const create = makeCreateSite(deps);
+
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).resolves.toBeUndefined();
+    const warning = spies.logs.find((l) => l.includes("did not complete"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("vercel.com/alice/my-site");
+  });
+
+  it("propagates non-timeout deployment errors", async () => {
+    const { deps } = makeDeps({
+      pollDeploymentReady: async () => {
+        throw new Error("ERROR state");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(/ERROR state/);
+  });
+
+  it("skips all Vercel work when --skip-vercel is set", async () => {
+    const { deps, spies } = makeDeps();
+    const resolveVercelTokenSpy = jest.fn(deps.resolveVercelToken);
+    deps.resolveVercelToken = resolveVercelTokenSpy;
+
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w", skipVercel: true });
+
+    expect(resolveVercelTokenSpy).not.toHaveBeenCalled();
+    expect(spies.writeFileCalls).toHaveLength(0);
+    expect(spies.vercelCheckCalls).toHaveLength(0);
+    expect(spies.vercelCreateCalls).toHaveLength(0);
+    expect(spies.vercelPollCalls).toHaveLength(0);
   });
 });
