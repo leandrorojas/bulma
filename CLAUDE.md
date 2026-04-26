@@ -18,7 +18,7 @@ The submodule is pinned to a specific commit. To pull the latest senzu changes: 
 
 - `src/` — TypeScript source (CLI entry, commands, lib modules)
 - `src/commands/` — CLI command implementations (co-located tests)
-- `src/lib/` — Shared utilities: auth, git, github API, fs helpers
+- `src/lib/` — Shared utilities: auth, git, GitHub API, fs helpers
 - `dist/` — Compiled JS output (not committed)
 
 ## Architecture Decisions
