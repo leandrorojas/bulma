@@ -262,8 +262,24 @@ describe("createSite", () => {
 });
 
 describe("createSite — Vercel integration", () => {
-  it("writes vercel.json into the target before the initial commit", async () => {
+  it("writes vercel.json into the target before `git add` (so it lands in the initial commit)", async () => {
     const { deps, spies } = makeDeps();
+    let counter = 0;
+    let writeFileOrder = -1;
+    let gitAddOrder = -1;
+    const innerWrite = deps.writeFile;
+    const innerRunGit = deps.runGit;
+    deps.writeFile = async (p, c) => {
+      writeFileOrder = counter++;
+      await innerWrite(p, c);
+    };
+    deps.runGit = async (args, opts) => {
+      if (args.includes("add") && gitAddOrder === -1) {
+        gitAddOrder = counter++;
+      }
+      await innerRunGit(args, opts);
+    };
+
     const create = makeCreateSite(deps);
     await create("my-site", { cwd: "/w" });
 
@@ -279,13 +295,8 @@ describe("createSite — Vercel integration", () => {
       framework: null,
     });
 
-    // writeFile must occur before `git add` (otherwise it wouldn't be in the
-    // initial commit). We track call ordering via push order across spies —
-    // writeFile is recorded synchronously between copyDir and gitCalls' init.
-    const initIndex = spies.gitCalls.findIndex((c) => c.args[0] === "init");
-    // copyDir → writeFile → init: ensure writeFile happened (it did) and the
-    // init call exists. The flow code guarantees the order.
-    expect(initIndex).toBeGreaterThan(-1);
+    expect(writeFileOrder).toBeGreaterThanOrEqual(0);
+    expect(gitAddOrder).toBeGreaterThan(writeFileOrder);
   });
 
   it("verifies the GitHub App and creates the Vercel project", async () => {
@@ -329,14 +340,14 @@ describe("createSite — Vercel integration", () => {
     expect(spies.vercelPollCalls[0].teamId).toBe("team_abc");
   });
 
-  it("throws a clear error when the GitHub App is not installed", async () => {
+  it("throws a clear error with cleanup hint when the GitHub App is not installed", async () => {
     const { deps, spies } = makeDeps({
       checkGitHubAppInstalled: async () => false,
     });
     const create = makeCreateSite(deps);
 
     await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(
-      /Vercel GitHub App not installed.*alice.*vercel\.com\/integrations\/github/
+      /Vercel GitHub App not installed.*alice.*vercel\.com\/integrations\/github.*--skip-vercel.*github\.com\/alice\/my-site/s
     );
     expect(spies.vercelCreateCalls).toHaveLength(0);
   });
@@ -357,14 +368,19 @@ describe("createSite — Vercel integration", () => {
     expect(warning).toContain("vercel.com/alice/my-site");
   });
 
-  it("propagates non-timeout deployment errors", async () => {
-    const { deps } = makeDeps({
+  it("logs the dashboard URL before propagating non-timeout deployment errors", async () => {
+    const { deps, spies } = makeDeps({
       pollDeploymentReady: async () => {
         throw new Error("ERROR state");
       },
     });
     const create = makeCreateSite(deps);
-    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(/ERROR state/);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).rejects.toThrow(/ERROR state/);
+    const failureLog = spies.logs.find((l) => l.includes("Deployment failed"));
+    expect(failureLog).toBeDefined();
+    expect(failureLog).toContain("vercel.com/alice/my-site");
   });
 
   it("skips all Vercel work when --skip-vercel is set", async () => {

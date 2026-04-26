@@ -24,7 +24,10 @@ function makeFetch(...responses: FakeResponse[]): {
   const fake = (async (...args: FetchArgs) => {
     const [url, init] = args;
     calls.push({ url: String(url), init: init ?? {} });
-    const r = responses[i] ?? responses[responses.length - 1];
+    if (i >= responses.length) {
+      throw new Error(`makeFetch: unexpected fetch call #${i + 1}`);
+    }
+    const r = responses[i];
     i += 1;
     return {
       ok: r.ok,
@@ -311,10 +314,11 @@ describe("pollDeploymentReady", () => {
   });
 
   it("throws DeploymentTimeoutError when wall clock exceeds budget", async () => {
-    const { fetch: fake } = makeFetch({
+    const building = {
       ok: true,
       body: { deployments: [{ uid: "d1", url: "u", state: "BUILDING" }] },
-    });
+    };
+    const { fetch: fake } = makeFetch(building, building, building);
     const clock = fakeClock();
     await expect(
       pollDeploymentReady(
@@ -340,5 +344,68 @@ describe("pollDeploymentReady", () => {
     );
     expect(dep.uid).toBe("d1");
     expect(clock.sleeps).toEqual([1_000]);
+  });
+
+  it("swallows transient API errors and keeps polling until READY", async () => {
+    const { fetch: fake } = makeFetch(
+      { ok: false, status: 503, statusText: "Service Unavailable", body: "down" },
+      { ok: true, body: { deployments: [{ uid: "d1", url: "u", state: "READY" }] } }
+    );
+    const clock = fakeClock();
+    const dep = await pollDeploymentReady(
+      "t",
+      "prj_1",
+      { timeoutMs: 60_000, intervalMs: 1_000, ...clock },
+      { fetch: fake }
+    );
+    expect(dep.state).toBe("READY");
+  });
+
+  it("includes the last transient error in the timeout message", async () => {
+    const flaky = {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      body: "upstream",
+    };
+    const { fetch: fake } = makeFetch(flaky, flaky, flaky);
+    const clock = fakeClock();
+    await expect(
+      pollDeploymentReady(
+        "t",
+        "prj_1",
+        { timeoutMs: 3_000, intervalMs: 1_000, ...clock },
+        { fetch: fake }
+      )
+    ).rejects.toThrow(/within 3000ms.*last error.*502 Bad Gateway/s);
+  });
+
+  it("DeploymentFailedError short-circuits even if a transient blip preceded it", async () => {
+    const { fetch: fake } = makeFetch(
+      { ok: false, status: 500, statusText: "x", body: "y" },
+      { ok: true, body: { deployments: [{ uid: "d1", url: "u", state: "ERROR" }] } }
+    );
+    const clock = fakeClock();
+    await expect(
+      pollDeploymentReady(
+        "t",
+        "prj_1",
+        { timeoutMs: 60_000, intervalMs: 1_000, ...clock },
+        { fetch: fake }
+      )
+    ).rejects.toBeInstanceOf(DeploymentFailedError);
+  });
+});
+
+describe("getLatestProductionDeployment defensive shape", () => {
+  it("returns null when the API omits the deployments array", async () => {
+    const { fetch: fake } = makeFetch({ ok: true, body: {} });
+    const dep = await getLatestProductionDeployment(
+      "t",
+      "prj_1",
+      {},
+      { fetch: fake }
+    );
+    expect(dep).toBeNull();
   });
 });

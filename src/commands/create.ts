@@ -227,7 +227,9 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     if (!installed) {
       throw new Error(
         `Vercel GitHub App not installed (or restricted) for "${owner}". ` +
-          `Install it with All-repos access at https://vercel.com/integrations/github`
+          `Install it with All-repos access at https://vercel.com/integrations/github, ` +
+          `then either re-run with --skip-vercel, or delete ${created.htmlUrl} ` +
+          `and re-run to redo the whole flow.`
       );
     }
 
@@ -262,12 +264,14 @@ export function makeCreateSite(deps: CreateSiteDeps) {
         }
       );
     } catch (err) {
+      // Both branches surface the dashboard URL — the project + repo are in
+      // place either way, and the user needs the link regardless of whether
+      // we treat this as fatal (DeploymentFailedError) or recoverable (timeout).
+      const dashboard = `https://vercel.com/${owner}/${siteName}`;
       if (err instanceof DeploymentTimeoutError) {
-        log(
-          `⚠ First deployment did not complete in 5 min. ` +
-            `Check https://vercel.com/${owner}/${siteName}`
-        );
+        log(`⚠ First deployment did not complete in 5 min. Check ${dashboard}`);
       } else {
+        log(`⚠ Deployment failed. Check ${dashboard}`);
         throw err;
       }
     }

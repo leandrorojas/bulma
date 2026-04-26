@@ -163,8 +163,8 @@ export async function getLatestProductionDeployment(
     { method: "GET", headers: authHeaders(token) },
     "list deployments"
   );
-  const data = (await res.json()) as { deployments: DeploymentListItem[] };
-  const first = data.deployments[0];
+  const data = (await res.json()) as { deployments?: DeploymentListItem[] };
+  const first = data.deployments?.[0];
   if (!first) return null;
   const state = first.state ?? first.readyState ?? "QUEUED";
   return { uid: first.uid, url: first.url, state };
@@ -197,9 +197,11 @@ export class DeploymentFailedError extends Error {
   }
 }
 
-// Polls until the latest production deployment reaches READY. Throws
-// DeploymentTimeoutError when the wall clock exceeds `timeoutMs`, and
-// DeploymentFailedError when the deployment ends in ERROR or CANCELED.
+// Polls until the latest production deployment reaches READY. Transient
+// fetch errors (network blip, 429, 5xx) are swallowed and the loop keeps
+// polling until the deadline. Only DeploymentFailedError (terminal state)
+// short-circuits. On timeout, the last transient error is chained into the
+// thrown DeploymentTimeoutError so callers can surface the real cause.
 export async function pollDeploymentReady(
   token: string,
   projectId: string,
@@ -212,26 +214,36 @@ export async function pollDeploymentReady(
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const interval = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const deadline = now() + options.timeoutMs;
+  let lastError: unknown;
 
   while (now() < deadline) {
-    const deployment = await getLatestProductionDeployment(
-      token,
-      projectId,
-      { teamId: options.teamId },
-      deps
-    );
-    if (deployment) {
-      if (deployment.state === "READY") return deployment;
-      if (deployment.state === "ERROR" || deployment.state === "CANCELED") {
-        throw new DeploymentFailedError(
-          `Deployment ${deployment.uid} ended in ${deployment.state}`,
-          deployment.state
-        );
+    try {
+      const deployment = await getLatestProductionDeployment(
+        token,
+        projectId,
+        { teamId: options.teamId },
+        deps
+      );
+      if (deployment) {
+        if (deployment.state === "READY") return deployment;
+        if (deployment.state === "ERROR" || deployment.state === "CANCELED") {
+          throw new DeploymentFailedError(
+            `Deployment ${deployment.uid} ended in ${deployment.state}`,
+            deployment.state
+          );
+        }
       }
+      lastError = undefined;
+    } catch (err) {
+      if (err instanceof DeploymentFailedError) throw err;
+      lastError = err;
     }
     await sleep(interval);
   }
+  const reason = lastError
+    ? ` (last error: ${lastError instanceof Error ? lastError.message : String(lastError)})`
+    : "";
   throw new DeploymentTimeoutError(
-    `Deployment did not become READY within ${options.timeoutMs}ms`
+    `Deployment did not become READY within ${options.timeoutMs}ms${reason}`
   );
 }
