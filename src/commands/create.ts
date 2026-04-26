@@ -303,15 +303,23 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     // and the project sits empty. Trigger an explicit deployment from the
     // linked repo's main branch HEAD.
     log("→ Triggering initial Vercel production deployment");
-    await deps.triggerProductionDeployment(
-      vercel.token,
-      {
-        projectName: siteName,
-        gitRepoId: created.id,
-        ref: "main",
-      },
-      { teamId: vercel.teamId }
-    );
+    try {
+      await deps.triggerProductionDeployment(
+        vercel.token,
+        {
+          projectName: siteName,
+          gitRepoId: created.id,
+          ref: "main",
+        },
+        { teamId: vercel.teamId }
+      );
+    } catch (err) {
+      // Project + repo are already in place; surface the dashboard so the
+      // user can retry the deploy (or check for a Vercel/GitHub link sync
+      // issue) before re-throwing.
+      log(`⚠ Failed to trigger initial deployment. Check ${dashboard}`);
+      throw err;
+    }
 
     // 10. Poll the first production deployment. Treat timeout as a warning,
     // not a fatal — the project is created and Vercel will keep building;

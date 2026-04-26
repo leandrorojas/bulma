@@ -378,6 +378,25 @@ describe("createSite — Vercel integration", () => {
     expect(spies.vercelPollCalls[0].teamId).toBe("team_abc");
   });
 
+  it("logs the dashboard URL before propagating triggerProductionDeployment failures", async () => {
+    const { deps, spies } = makeDeps({
+      triggerProductionDeployment: async () => {
+        throw new Error("repo link not propagated");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).rejects.toThrow(/repo link not propagated/);
+    const failureLog = spies.logs.find((l) =>
+      l.includes("Failed to trigger initial deployment")
+    );
+    expect(failureLog).toBeDefined();
+    expect(failureLog).toContain("vercel.com/alice-vercel/my-site");
+    // Polling never happens — deployment didn't fire.
+    expect(spies.vercelPollCalls).toHaveLength(0);
+  });
+
   it("treats updateProjectNodeVersion failure as a warning, not a fatal error", async () => {
     const { deps, spies } = makeDeps({
       updateProjectNodeVersion: async () => {
