@@ -59,7 +59,14 @@ async function vercelFetch(
   init: RequestInit,
   context: string
 ): Promise<Response> {
-  const res = await doFetch(url, {
+  // Re-parse via the URL constructor and reject anything not on api.vercel.com.
+  // This is the sanitization boundary: regardless of how the URL was built by
+  // callers, we only ever issue requests to the Vercel API host.
+  const parsed = new URL(url);
+  if (parsed.origin !== API_BASE) {
+    throw new Error(`Refusing to call non-Vercel host: ${parsed.origin}`);
+  }
+  const res = await doFetch(parsed, {
     ...init,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
