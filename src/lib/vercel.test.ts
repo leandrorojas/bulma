@@ -2,6 +2,7 @@ import {
   checkGitHubAppInstalled,
   createVercelProject,
   updateProjectNodeVersion,
+  triggerProductionDeployment,
   getLatestProductionDeployment,
   pollDeploymentReady,
   getAccountSlug,
@@ -321,6 +322,87 @@ describe("updateProjectNodeVersion", () => {
     await expect(
       updateProjectNodeVersion("t", "prj_123", "999.x", {}, { fetch: fake })
     ).rejects.toThrow(/400 Bad Request[\s\S]*invalid nodeVersion/);
+  });
+});
+
+describe("triggerProductionDeployment", () => {
+  it("POSTs to /v13/deployments with target=production and the gitSource", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      status: 201,
+      body: { uid: "dpl_abc123", url: "site.vercel.app" },
+    });
+    const result = await triggerProductionDeployment(
+      "t",
+      { projectName: "my-site", gitRepoId: 12345, ref: "main" },
+      {},
+      { fetch: fake }
+    );
+    expect(result).toEqual({ uid: "dpl_abc123" });
+    expect(calls[0].url).toContain("/v13/deployments");
+    expect(calls[0].init.method).toBe("POST");
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      name: "my-site",
+      target: "production",
+      gitSource: { type: "github", repoId: 12345, ref: "main" },
+    });
+  });
+
+  it("falls back to `id` when the response uses that key", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { id: "dpl_legacy" },
+    });
+    const result = await triggerProductionDeployment(
+      "t",
+      { projectName: "x", gitRepoId: 1, ref: "main" },
+      {},
+      { fetch: fake }
+    );
+    expect(result.uid).toBe("dpl_legacy");
+  });
+
+  it("scopes to teamId when set", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      body: { uid: "d" },
+    });
+    await triggerProductionDeployment(
+      "t",
+      { projectName: "x", gitRepoId: 1, ref: "main" },
+      { teamId: "team_abc" },
+      { fetch: fake }
+    );
+    expect(calls[0].url).toContain("teamId=team_abc");
+  });
+
+  it("throws when the response has neither uid nor id", async () => {
+    const { fetch: fake } = makeFetch({ ok: true, body: {} });
+    await expect(
+      triggerProductionDeployment(
+        "t",
+        { projectName: "x", gitRepoId: 1, ref: "main" },
+        {},
+        { fetch: fake }
+      )
+    ).rejects.toThrow(/missing uid\/id/);
+  });
+
+  it("surfaces API errors", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      body: { error: { message: "no access to repo" } },
+    });
+    await expect(
+      triggerProductionDeployment(
+        "t",
+        { projectName: "x", gitRepoId: 1, ref: "main" },
+        {},
+        { fetch: fake }
+      )
+    ).rejects.toThrow(/403 Forbidden[\s\S]*no access to repo/);
   });
 });
 

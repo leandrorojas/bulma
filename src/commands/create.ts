@@ -9,6 +9,7 @@ import {
   checkGitHubAppInstalled,
   createVercelProject,
   updateProjectNodeVersion,
+  triggerProductionDeployment,
   pollDeploymentReady,
   getAccountSlug,
   CreatedVercelProject,
@@ -62,6 +63,7 @@ export interface CreateSiteDeps {
   checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
   createVercelProject: typeof createVercelProject;
   updateProjectNodeVersion: typeof updateProjectNodeVersion;
+  triggerProductionDeployment: typeof triggerProductionDeployment;
   pollDeploymentReady: typeof pollDeploymentReady;
   getAccountSlug: typeof getAccountSlug;
   runGit: typeof runGit;
@@ -82,6 +84,7 @@ export const realDeps: CreateSiteDeps = {
   checkGitHubAppInstalled,
   createVercelProject,
   updateProjectNodeVersion,
+  triggerProductionDeployment,
   pollDeploymentReady,
   getAccountSlug,
   runGit,
@@ -293,6 +296,22 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       const reason = err instanceof Error ? err.message : String(err);
       log(`⚠ Failed to pin Node ${VERCEL_NODE_VERSION} on Vercel project: ${reason}`);
     }
+
+    // Vercel does NOT automatically deploy on project creation — it only
+    // reacts to push events that happen *after* the link is established.
+    // Since we push to GitHub before creating the project, no event fires
+    // and the project sits empty. Trigger an explicit deployment from the
+    // linked repo's main branch HEAD.
+    log("→ Triggering initial Vercel production deployment");
+    await deps.triggerProductionDeployment(
+      vercel.token,
+      {
+        projectName: siteName,
+        gitRepoId: created.id,
+        ref: "main",
+      },
+      { teamId: vercel.teamId }
+    );
 
     // 10. Poll the first production deployment. Treat timeout as a warning,
     // not a fatal — the project is created and Vercel will keep building;

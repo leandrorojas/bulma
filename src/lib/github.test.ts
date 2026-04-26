@@ -26,6 +26,7 @@ describe("createPrivateRepo", () => {
     const { fetch: fake, calls } = makeFetch({
       ok: true,
       body: {
+        id: 12345,
         clone_url: "https://github.com/alice/my-site.git",
         html_url: "https://github.com/alice/my-site",
       },
@@ -39,6 +40,7 @@ describe("createPrivateRepo", () => {
     );
 
     expect(result).toEqual({
+      id: 12345,
       cloneUrl: "https://github.com/alice/my-site.git",
       htmlUrl: "https://github.com/alice/my-site",
     });
@@ -63,6 +65,7 @@ describe("createPrivateRepo", () => {
     const { fetch: fake, calls } = makeFetch({
       ok: true,
       body: {
+        id: 99,
         clone_url: "https://github.com/alice/s.git",
         html_url: "https://github.com/alice/s",
       },

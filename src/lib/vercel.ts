@@ -179,6 +179,54 @@ export async function createVercelProject(
   return { id: data.id, name: data.name };
 }
 
+export interface TriggerDeploymentOptions {
+  projectName: string;
+  // Numeric GitHub repository ID — required by Vercel's gitSource.
+  gitRepoId: number;
+  // Branch to deploy. Production should be "main".
+  ref: string;
+}
+
+// Triggers an explicit production deployment from the linked GitHub repo.
+// Vercel does NOT automatically deploy when a project is created — it only
+// reacts to push events that occur after the link is established. Since our
+// flow pushes BEFORE creating the project, the initial deploy must be
+// triggered explicitly via this endpoint.
+export async function triggerProductionDeployment(
+  token: string,
+  options: TriggerDeploymentOptions,
+  scope: VercelTeamScope = {},
+  deps: VercelClientDeps = {}
+): Promise<{ uid: string }> {
+  const doFetch = deps.fetch ?? fetch;
+  const url = withTeam(`${API_BASE}/v13/deployments`, scope.teamId);
+  const body = {
+    name: options.projectName,
+    target: "production",
+    gitSource: {
+      type: "github",
+      repoId: options.gitRepoId,
+      ref: options.ref,
+    },
+  };
+  const res = await vercelFetch(
+    doFetch,
+    url,
+    {
+      method: "POST",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    "trigger deployment"
+  );
+  const data = (await res.json()) as { uid?: string; id?: string };
+  const uid = data.uid ?? data.id;
+  if (typeof uid !== "string" || uid.length === 0) {
+    throw new Error("Vercel API: deployment response missing uid/id");
+  }
+  return { uid };
+}
+
 // Pin the project's Node version. Must be called after createVercelProject —
 // the POST endpoint rejects `nodeVersion` as an unknown property, so the
 // only way to set it is PATCH /v9/projects/{id}.

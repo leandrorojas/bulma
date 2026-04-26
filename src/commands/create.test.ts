@@ -22,6 +22,7 @@ interface Spies {
   vercelCheckCalls: Array<{ token: string; namespace: string; teamId?: string }>;
   vercelCreateCalls: Array<{ token: string; options: unknown; teamId?: string }>;
   vercelNodeVersionCalls: Array<{ token: string; projectId: string; nodeVersion: string; teamId?: string }>;
+  vercelTriggerCalls: Array<{ token: string; projectName: string; gitRepoId: number; ref: string; teamId?: string }>;
   vercelPollCalls: Array<{ token: string; projectId: string; teamId?: string }>;
   vercelSlugCalls: Array<{ token: string; teamId?: string }>;
   logs: string[];
@@ -40,6 +41,7 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     vercelCheckCalls: [],
     vercelCreateCalls: [],
     vercelNodeVersionCalls: [],
+    vercelTriggerCalls: [],
     vercelPollCalls: [],
     vercelSlugCalls: [],
     logs: [],
@@ -51,6 +53,7 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     createPrivateRepo: async (token, name, options) => {
       spies.createRepoCalls.push({ token, name, options });
       return {
+        id: 999,
         cloneUrl: `https://github.com/alice/${name}.git`,
         htmlUrl: `https://github.com/alice/${name}`,
       };
@@ -70,6 +73,16 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
         nodeVersion,
         teamId: scope?.teamId,
       });
+    },
+    triggerProductionDeployment: async (token, options, scope) => {
+      spies.vercelTriggerCalls.push({
+        token,
+        projectName: options.projectName,
+        gitRepoId: options.gitRepoId,
+        ref: options.ref,
+        teamId: scope?.teamId,
+      });
+      return { uid: "dpl_fake" };
     },
     pollDeploymentReady: async (token, projectId, options) => {
       spies.vercelPollCalls.push({ token, projectId, teamId: options.teamId });
@@ -340,6 +353,9 @@ describe("createSite — Vercel integration", () => {
     expect(spies.vercelNodeVersionCalls).toEqual([
       { token: "vcp_fake_token", projectId: "prj_fake", nodeVersion: "20.x", teamId: undefined },
     ]);
+    expect(spies.vercelTriggerCalls).toEqual([
+      { token: "vcp_fake_token", projectName: "my-site", gitRepoId: 999, ref: "main", teamId: undefined },
+    ]);
     expect(spies.vercelPollCalls).toHaveLength(1);
     expect(spies.vercelPollCalls[0]).toEqual({
       token: "vcp_fake_token",
@@ -358,6 +374,7 @@ describe("createSite — Vercel integration", () => {
     expect(spies.vercelCheckCalls[0].teamId).toBe("team_abc");
     expect(spies.vercelCreateCalls[0].teamId).toBe("team_abc");
     expect(spies.vercelNodeVersionCalls[0].teamId).toBe("team_abc");
+    expect(spies.vercelTriggerCalls[0].teamId).toBe("team_abc");
     expect(spies.vercelPollCalls[0].teamId).toBe("team_abc");
   });
 
@@ -488,6 +505,7 @@ describe("createSite — Vercel integration", () => {
     expect(spies.writeFileCalls).toHaveLength(0);
     expect(spies.vercelCheckCalls).toHaveLength(0);
     expect(spies.vercelCreateCalls).toHaveLength(0);
+    expect(spies.vercelTriggerCalls).toHaveLength(0);
     expect(spies.vercelPollCalls).toHaveLength(0);
     expect(spies.vercelSlugCalls).toHaveLength(0);
   });
