@@ -282,9 +282,10 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       { teamId: vercel.teamId }
     );
     // Vercel rejects nodeVersion in the create body — set it via PATCH after.
-    // Best-effort: a 4xx here doesn't invalidate the project (Vercel just
-    // falls back to its default Node version), so we log a warning rather
-    // than abort the scaffold.
+    // Best-effort: any failure here (4xx, 5xx, network) is non-fatal because
+    // the project itself was created on the line above. The fallback is
+    // Vercel's default Node version, which works for React 19 + Webpack 5,
+    // so we log a warning rather than abort and force a full re-scaffold.
     try {
       await deps.updateProjectNodeVersion(
         vercel.token,
