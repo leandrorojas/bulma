@@ -25,10 +25,25 @@ export interface VercelTeamScope {
   teamId?: string;
 }
 
-function withTeam(url: string, teamId?: string): string {
-  if (!teamId) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}teamId=${encodeURIComponent(teamId)}`;
+// Build a URL via the URL constructor + URL.searchParams. Going through the
+// browser/runtime URL API (instead of template-literal concatenation) gives
+// static analyzers — notably SonarCloud's tssecurity rules — a recognizable
+// "URL builder" shape so they don't flag taint that's already validated and
+// percent-encoded.
+function buildVercelUrl(
+  pathSegments: readonly string[],
+  query: Record<string, string | undefined> = {}
+): string {
+  const u = new URL(API_BASE);
+  // pathname starts with "/" — pathSegments are joined with "/" and each
+  // segment is the caller's responsibility (already encoded if untrusted).
+  u.pathname = "/" + pathSegments.join("/");
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined && v.length > 0) {
+      u.searchParams.set(k, v);
+    }
+  }
+  return u.toString();
 }
 
 function authHeaders(token: string): Record<string, string> {
@@ -44,7 +59,14 @@ async function vercelFetch(
   init: RequestInit,
   context: string
 ): Promise<Response> {
-  const res = await doFetch(url, {
+  // Re-parse via the URL constructor and reject anything not on api.vercel.com.
+  // This is the sanitization boundary: regardless of how the URL was built by
+  // callers, we only ever issue requests to the Vercel API host.
+  const parsed = new URL(url);
+  if (parsed.origin !== API_BASE) {
+    throw new Error(`Refusing to call non-Vercel host: ${parsed.origin}`);
+  }
+  const res = await doFetch(parsed, {
     ...init,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
@@ -71,10 +93,10 @@ export async function checkGitHubAppInstalled(
   deps: VercelClientDeps = {}
 ): Promise<boolean> {
   const doFetch = deps.fetch ?? fetch;
-  const url = withTeam(
-    `${API_BASE}/v1/integrations/git-namespaces?provider=github`,
-    scope.teamId
-  );
+  const url = buildVercelUrl(["v1", "integrations", "git-namespaces"], {
+    provider: "github",
+    teamId: scope.teamId,
+  });
   const res = await vercelFetch(
     doFetch,
     url,
@@ -105,7 +127,7 @@ export async function getAccountSlug(
 ): Promise<string> {
   const doFetch = deps.fetch ?? fetch;
   if (scope.teamId) {
-    const url = `${API_BASE}/v2/teams/${encodeURIComponent(scope.teamId)}`;
+    const url = buildVercelUrl(["v2", "teams", encodeURIComponent(scope.teamId)]);
     const res = await vercelFetch(
       doFetch,
       url,
@@ -116,7 +138,7 @@ export async function getAccountSlug(
     if (typeof data.slug === "string" && data.slug.length > 0) return data.slug;
     throw new Error("Vercel API: team response missing slug");
   }
-  const url = `${API_BASE}/v2/user`;
+  const url = buildVercelUrl(["v2", "user"]);
   const res = await vercelFetch(
     doFetch,
     url,
@@ -139,8 +161,6 @@ export interface CreateProjectOptions {
   buildCommand: string;
   outputDirectory: string;
   installCommand: string;
-  // e.g. "20.x"
-  nodeVersion?: string;
 }
 
 export interface CreatedVercelProject {
@@ -155,8 +175,10 @@ export async function createVercelProject(
   deps: VercelClientDeps = {}
 ): Promise<CreatedVercelProject> {
   const doFetch = deps.fetch ?? fetch;
-  const url = withTeam(`${API_BASE}/v10/projects`, scope.teamId);
-  const body: Record<string, unknown> = {
+  const url = buildVercelUrl(["v10", "projects"], { teamId: scope.teamId });
+  // Vercel's POST /v10/projects does NOT accept `nodeVersion` — it must be
+  // set via PATCH on the project resource after creation. See updateProjectNodeVersion.
+  const body = {
     name: options.name,
     framework: null,
     gitRepository: { type: "github", repo: options.gitRepoFullName },
@@ -164,9 +186,6 @@ export async function createVercelProject(
     outputDirectory: options.outputDirectory,
     installCommand: options.installCommand,
   };
-  if (options.nodeVersion) {
-    body.nodeVersion = options.nodeVersion;
-  }
   const res = await vercelFetch(
     doFetch,
     url,
@@ -180,6 +199,84 @@ export async function createVercelProject(
   const data = (await res.json()) as { id: string; name: string };
   assertValidProjectId(data.id);
   return { id: data.id, name: data.name };
+}
+
+export interface TriggerDeploymentOptions {
+  projectName: string;
+  // Numeric GitHub repository ID — required by Vercel's gitSource.
+  gitRepoId: number;
+  // Branch to deploy. Production should be "main".
+  ref: string;
+}
+
+// Triggers an explicit production deployment from the linked GitHub repo.
+// Vercel does NOT automatically deploy when a project is created — it only
+// reacts to push events that occur after the link is established. Since our
+// flow pushes BEFORE creating the project, the initial deploy must be
+// triggered explicitly via this endpoint.
+export async function triggerProductionDeployment(
+  token: string,
+  options: TriggerDeploymentOptions,
+  scope: VercelTeamScope = {},
+  deps: VercelClientDeps = {}
+): Promise<{ uid: string }> {
+  const doFetch = deps.fetch ?? fetch;
+  const url = buildVercelUrl(["v13", "deployments"], { teamId: scope.teamId });
+  const body = {
+    name: options.projectName,
+    target: "production",
+    gitSource: {
+      type: "github",
+      repoId: options.gitRepoId,
+      ref: options.ref,
+    },
+  };
+  const res = await vercelFetch(
+    doFetch,
+    url,
+    {
+      method: "POST",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    "trigger deployment"
+  );
+  const data = (await res.json()) as { uid?: string; id?: string };
+  const uid = data.uid ?? data.id;
+  if (typeof uid !== "string" || uid.length === 0) {
+    throw new Error("Vercel API: deployment response missing uid/id");
+  }
+  return { uid };
+}
+
+// Pin the project's Node version. Must be called after createVercelProject —
+// the POST endpoint rejects `nodeVersion` as an unknown property, so the
+// only way to set it is PATCH /v9/projects/{id}.
+export async function updateProjectNodeVersion(
+  token: string,
+  projectId: string,
+  nodeVersion: string,
+  scope: VercelTeamScope = {},
+  deps: VercelClientDeps = {}
+): Promise<void> {
+  assertValidProjectId(projectId);
+  const doFetch = deps.fetch ?? fetch;
+  // projectId is regex-validated above; encodeURIComponent + URL constructor
+  // give Sonar's tssecurity rules a recognizable sanitization shape.
+  const url = buildVercelUrl(
+    ["v9", "projects", encodeURIComponent(projectId)],
+    { teamId: scope.teamId }
+  );
+  await vercelFetch(
+    doFetch,
+    url,
+    {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeVersion }),
+    },
+    "update project nodeVersion"
+  );
 }
 
 export type DeploymentState =
@@ -211,10 +308,12 @@ export async function getLatestProductionDeployment(
 ): Promise<VercelDeployment | null> {
   assertValidProjectId(projectId);
   const doFetch = deps.fetch ?? fetch;
-  const url = withTeam(
-    `${API_BASE}/v6/deployments?projectId=${encodeURIComponent(projectId)}&target=production&limit=1`,
-    scope.teamId
-  );
+  const url = buildVercelUrl(["v6", "deployments"], {
+    projectId,
+    target: "production",
+    limit: "1",
+    teamId: scope.teamId,
+  });
   const res = await vercelFetch(
     doFetch,
     url,

@@ -21,6 +21,8 @@ interface Spies {
   writeFileCalls: Array<{ filePath: string; content: string }>;
   vercelCheckCalls: Array<{ token: string; namespace: string; teamId?: string }>;
   vercelCreateCalls: Array<{ token: string; options: unknown; teamId?: string }>;
+  vercelNodeVersionCalls: Array<{ token: string; projectId: string; nodeVersion: string; teamId?: string }>;
+  vercelTriggerCalls: Array<{ token: string; projectName: string; gitRepoId: number; ref: string; teamId?: string }>;
   vercelPollCalls: Array<{ token: string; projectId: string; teamId?: string }>;
   vercelSlugCalls: Array<{ token: string; teamId?: string }>;
   logs: string[];
@@ -38,6 +40,8 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     writeFileCalls: [],
     vercelCheckCalls: [],
     vercelCreateCalls: [],
+    vercelNodeVersionCalls: [],
+    vercelTriggerCalls: [],
     vercelPollCalls: [],
     vercelSlugCalls: [],
     logs: [],
@@ -49,6 +53,7 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     createPrivateRepo: async (token, name, options) => {
       spies.createRepoCalls.push({ token, name, options });
       return {
+        id: 999,
         cloneUrl: `https://github.com/alice/${name}.git`,
         htmlUrl: `https://github.com/alice/${name}`,
       };
@@ -60,6 +65,24 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     createVercelProject: async (token, options, scope) => {
       spies.vercelCreateCalls.push({ token, options, teamId: scope?.teamId });
       return { id: "prj_fake", name: options.name };
+    },
+    updateProjectNodeVersion: async (token, projectId, nodeVersion, scope) => {
+      spies.vercelNodeVersionCalls.push({
+        token,
+        projectId,
+        nodeVersion,
+        teamId: scope?.teamId,
+      });
+    },
+    triggerProductionDeployment: async (token, options, scope) => {
+      spies.vercelTriggerCalls.push({
+        token,
+        projectName: options.projectName,
+        gitRepoId: options.gitRepoId,
+        ref: options.ref,
+        teamId: scope?.teamId,
+      });
+      return { uid: "dpl_fake" };
     },
     pollDeploymentReady: async (token, projectId, options) => {
       spies.vercelPollCalls.push({ token, projectId, teamId: options.teamId });
@@ -323,9 +346,16 @@ describe("createSite — Vercel integration", () => {
         buildCommand: "npm run build",
         outputDirectory: "dist",
         installCommand: "npm install",
-        nodeVersion: "20.x",
       },
     });
+    // nodeVersion is set via PATCH after create (Vercel's POST rejects it).
+    expect(spies.vercelCreateCalls[0].options).not.toHaveProperty("nodeVersion");
+    expect(spies.vercelNodeVersionCalls).toEqual([
+      { token: "vcp_fake_token", projectId: "prj_fake", nodeVersion: "20.x", teamId: undefined },
+    ]);
+    expect(spies.vercelTriggerCalls).toEqual([
+      { token: "vcp_fake_token", projectName: "my-site", gitRepoId: 999, ref: "main", teamId: undefined },
+    ]);
     expect(spies.vercelPollCalls).toHaveLength(1);
     expect(spies.vercelPollCalls[0]).toEqual({
       token: "vcp_fake_token",
@@ -343,7 +373,45 @@ describe("createSite — Vercel integration", () => {
 
     expect(spies.vercelCheckCalls[0].teamId).toBe("team_abc");
     expect(spies.vercelCreateCalls[0].teamId).toBe("team_abc");
+    expect(spies.vercelNodeVersionCalls[0].teamId).toBe("team_abc");
+    expect(spies.vercelTriggerCalls[0].teamId).toBe("team_abc");
     expect(spies.vercelPollCalls[0].teamId).toBe("team_abc");
+  });
+
+  it("logs the dashboard URL before propagating triggerProductionDeployment failures", async () => {
+    const { deps, spies } = makeDeps({
+      triggerProductionDeployment: async () => {
+        throw new Error("repo link not propagated");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).rejects.toThrow(/repo link not propagated/);
+    const failureLog = spies.logs.find((l) =>
+      l.includes("Failed to trigger initial deployment")
+    );
+    expect(failureLog).toBeDefined();
+    expect(failureLog).toContain("vercel.com/alice-vercel/my-site");
+    // Polling never happens — deployment didn't fire.
+    expect(spies.vercelPollCalls).toHaveLength(0);
+  });
+
+  it("treats updateProjectNodeVersion failure as a warning, not a fatal error", async () => {
+    const { deps, spies } = makeDeps({
+      updateProjectNodeVersion: async () => {
+        throw new Error("403 forbidden");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).resolves.toBeUndefined();
+    const warning = spies.logs.find((l) => l.includes("Failed to pin Node"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("403 forbidden");
+    // Poll still happens — the project itself was created.
+    expect(spies.vercelPollCalls).toHaveLength(1);
   });
 
   it("throws a clear error with cleanup hint when the GitHub App is not installed", async () => {
@@ -456,6 +524,7 @@ describe("createSite — Vercel integration", () => {
     expect(spies.writeFileCalls).toHaveLength(0);
     expect(spies.vercelCheckCalls).toHaveLength(0);
     expect(spies.vercelCreateCalls).toHaveLength(0);
+    expect(spies.vercelTriggerCalls).toHaveLength(0);
     expect(spies.vercelPollCalls).toHaveLength(0);
     expect(spies.vercelSlugCalls).toHaveLength(0);
   });

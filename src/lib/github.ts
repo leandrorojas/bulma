@@ -4,6 +4,7 @@ export interface CreateRepoOptions {
 }
 
 export interface CreatedRepo {
+  id: number;
   cloneUrl: string;
   htmlUrl: string;
 }
@@ -49,6 +50,6 @@ export async function createPrivateRepo(
     );
   }
 
-  const data = (await res.json()) as { clone_url: string; html_url: string };
-  return { cloneUrl: data.clone_url, htmlUrl: data.html_url };
+  const data = (await res.json()) as { id: number; clone_url: string; html_url: string };
+  return { id: data.id, cloneUrl: data.clone_url, htmlUrl: data.html_url };
 }
