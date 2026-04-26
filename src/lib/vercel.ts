@@ -81,10 +81,55 @@ export async function checkGitHubAppInstalled(
     { method: "GET", headers: authHeaders(token) },
     "list git namespaces"
   );
-  const namespaces = (await res.json()) as GitNamespace[];
+  const parsed: unknown = await res.json();
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `Vercel API error (list git namespaces): expected array, got ${typeof parsed}`
+    );
+  }
+  const namespaces = parsed as GitNamespace[];
   const match = namespaces.find((n) => n.slug === namespaceSlug);
   if (!match) return false;
   return match.isAccessRestricted === false;
+}
+
+// Resolves the Vercel account/team slug used in dashboard URLs. For
+// personal scope, this is the user's `username`. For team scope (teamId
+// set), it's the team's `slug`. Both can — and often do — differ from the
+// caller's GitHub username, so the dashboard URL must use this and not
+// the GitHub owner.
+export async function getAccountSlug(
+  token: string,
+  scope: VercelTeamScope = {},
+  deps: VercelClientDeps = {}
+): Promise<string> {
+  const doFetch = deps.fetch ?? fetch;
+  if (scope.teamId) {
+    const url = `${API_BASE}/v2/teams/${encodeURIComponent(scope.teamId)}`;
+    const res = await vercelFetch(
+      doFetch,
+      url,
+      { method: "GET", headers: authHeaders(token) },
+      "get team"
+    );
+    const data = (await res.json()) as { slug?: string };
+    if (typeof data.slug === "string" && data.slug.length > 0) return data.slug;
+    throw new Error("Vercel API: team response missing slug");
+  }
+  const url = `${API_BASE}/v2/user`;
+  const res = await vercelFetch(
+    doFetch,
+    url,
+    { method: "GET", headers: authHeaders(token) },
+    "get user"
+  );
+  const data = (await res.json()) as {
+    user?: { username?: string };
+    username?: string;
+  };
+  const slug = data.user?.username ?? data.username;
+  if (typeof slug === "string" && slug.length > 0) return slug;
+  throw new Error("Vercel API: user response missing username");
 }
 
 export interface CreateProjectOptions {

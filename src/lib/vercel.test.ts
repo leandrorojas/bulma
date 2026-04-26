@@ -3,6 +3,7 @@ import {
   createVercelProject,
   getLatestProductionDeployment,
   pollDeploymentReady,
+  getAccountSlug,
   DeploymentFailedError,
   DeploymentTimeoutError,
 } from "./vercel";
@@ -99,6 +100,71 @@ describe("checkGitHubAppInstalled", () => {
     await expect(
       checkGitHubAppInstalled("t", "alice", {}, { fetch: fake })
     ).rejects.toThrow(/401 Unauthorized/);
+  });
+
+  it("throws clearly when the API returns a non-array body", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { error: "unexpected shape" },
+    });
+    await expect(
+      checkGitHubAppInstalled("t", "alice", {}, { fetch: fake })
+    ).rejects.toThrow(/expected array/);
+  });
+});
+
+describe("getAccountSlug", () => {
+  it("returns the team slug when teamId is set", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      body: { slug: "my-team" },
+    });
+    const slug = await getAccountSlug(
+      "t",
+      { teamId: "team_abc" },
+      { fetch: fake }
+    );
+    expect(slug).toBe("my-team");
+    expect(calls[0].url).toContain("/v2/teams/team_abc");
+  });
+
+  it("returns the user username when no teamId is set (nested shape)", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      body: { user: { username: "alice-vercel" } },
+    });
+    const slug = await getAccountSlug("t", {}, { fetch: fake });
+    expect(slug).toBe("alice-vercel");
+    expect(calls[0].url).toContain("/v2/user");
+  });
+
+  it("falls back to the top-level username when nested shape is absent", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { username: "alice-flat" },
+    });
+    const slug = await getAccountSlug("t", {}, { fetch: fake });
+    expect(slug).toBe("alice-flat");
+  });
+
+  it("throws when team response has no slug", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { id: "team_abc" },
+    });
+    await expect(
+      getAccountSlug("t", { teamId: "team_abc" }, { fetch: fake })
+    ).rejects.toThrow(/team response missing slug/);
+  });
+
+  it("throws when user response has no username", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: true,
+      body: { user: {} },
+    });
+    await expect(getAccountSlug("t", {}, { fetch: fake })).rejects.toThrow(
+      /user response missing username/
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import {
   checkGitHubAppInstalled,
   createVercelProject,
   pollDeploymentReady,
+  getAccountSlug,
   CreatedVercelProject,
   VercelDeployment,
   DeploymentTimeoutError,
@@ -25,6 +26,7 @@ const VERCEL_OUTPUT_DIRECTORY = "dist";
 const VERCEL_INSTALL_COMMAND = "npm install";
 const VERCEL_NODE_VERSION = "20.x";
 const VERCEL_DEPLOY_TIMEOUT_MS = 5 * 60 * 1000;
+const VERCEL_FALLBACK_DASHBOARD = "https://vercel.com/dashboard";
 
 const VERCEL_JSON_CONTENT =
   JSON.stringify(
@@ -59,6 +61,7 @@ export interface CreateSiteDeps {
   checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
   createVercelProject: typeof createVercelProject;
   pollDeploymentReady: typeof pollDeploymentReady;
+  getAccountSlug: typeof getAccountSlug;
   runGit: typeof runGit;
   copyDir: typeof copyDir;
   removeDir: typeof removeDir;
@@ -77,6 +80,7 @@ export const realDeps: CreateSiteDeps = {
   checkGitHubAppInstalled,
   createVercelProject,
   pollDeploymentReady,
+  getAccountSlug,
   runGit,
   copyDir,
   removeDir,
@@ -94,6 +98,12 @@ function parseGitHubOwner(htmlUrl: string): string {
   }
   return match[1];
 }
+
+// Discriminated union — when enabled is true, token is guaranteed non-null,
+// so the rest of the flow can drop the `!` non-null assertions.
+type VercelContext =
+  | { enabled: false }
+  | { enabled: true; token: string; teamId: string | undefined };
 
 export function makeCreateSite(deps: CreateSiteDeps) {
   return async function createSite(
@@ -121,15 +131,20 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     log("→ Resolving GitHub token");
     const token = await deps.resolveToken();
 
-    let vercelToken: string | undefined;
-    let vercelTeamId: string | undefined;
+    let vercel: VercelContext = { enabled: false };
     if (!options.skipVercel) {
       log("→ Resolving Vercel token");
-      vercelToken = await deps.resolveVercelToken();
-      vercelTeamId = deps.getVercelTeamId();
+      const vercelToken = await deps.resolveVercelToken();
+      vercel = {
+        enabled: true,
+        token: vercelToken,
+        teamId: deps.getVercelTeamId(),
+      };
     }
 
-    // 4. Clone hoi-poi shallow into tmp, copy shell-template into target
+    // 4. Clone hoi-poi shallow into tmp, copy shell-template into target.
+    // The inner cleanup catch covers both copyDir and the vercel.json write
+    // so a partial scaffold is always rolled back.
     const tmpDir = await deps.mkdtemp(path.join(os.tmpdir(), "bulma-"));
     try {
       log(`→ Cloning ${cloneUrl}`);
@@ -145,6 +160,12 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       log(`→ Scaffolding ${targetDir}`);
       try {
         await deps.copyDir(templateSrc, targetDir);
+        if (vercel.enabled) {
+          await deps.writeFile(
+            path.join(targetDir, "vercel.json"),
+            VERCEL_JSON_CONTENT
+          );
+        }
       } catch (err) {
         await deps.removeDir(targetDir).catch(() => {});
         throw err;
@@ -155,13 +176,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       });
     }
 
-    // 5. Drop a vercel.json so the first deploy uses the right build settings
-    // even if the GitHub-Vercel link races ahead of the project's CLI config.
-    if (!options.skipVercel) {
-      await deps.writeFile(path.join(targetDir, "vercel.json"), VERCEL_JSON_CONTENT);
-    }
-
-    // 6. Initialize local repo + initial commit. Set a default git identity so
+    // 5. Initialize local repo + initial commit. Set a default git identity so
     // this works in pristine / CI environments where user.name and user.email
     // may not be configured.
     log("→ Initializing local git repo");
@@ -173,7 +188,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       { cwd: targetDir }
     );
 
-    // 7. Create private GitHub repo (first external side effect).
+    // 6. Create private GitHub repo (first external side effect).
     // If this or any subsequent step fails, clean up the local directory
     // so the user can re-run from a clean state. (The remote GitHub repo,
     // if created, will remain as an empty orphan — manual cleanup.)
@@ -190,7 +205,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw err;
     }
 
-    // 8. Push using http.extraheader for one-shot auth.
+    // 7. Push using http.extraheader for one-shot auth.
     // The token never touches .git/config on disk.
     log(`→ Pushing to ${created.htmlUrl}`);
     await deps.runGit(["remote", "add", "origin", created.cloneUrl], {
@@ -210,19 +225,19 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw err;
     }
 
-    if (options.skipVercel) {
+    if (!vercel.enabled) {
       log(`✓ ${siteName} created at ${created.htmlUrl} (Vercel skipped)`);
       return;
     }
 
-    // 9. Vercel project. The repo must exist with code on `main` before we
+    // 8. Vercel project. The repo must exist with code on `main` before we
     // ask Vercel to link, so the first deployment has something to build.
     const owner = parseGitHubOwner(created.htmlUrl);
     log("→ Verifying Vercel ↔ GitHub integration");
     const installed = await deps.checkGitHubAppInstalled(
-      vercelToken!,
+      vercel.token,
       owner,
-      { teamId: vercelTeamId }
+      { teamId: vercel.teamId }
     );
     if (!installed) {
       throw new Error(
@@ -233,11 +248,24 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       );
     }
 
+    // 9. Resolve the Vercel account slug for dashboard URLs. Best-effort:
+    // if the lookup fails, fall back to the generic dashboard so we never
+    // surface a 404 link to the user.
+    let accountSlug: string | undefined;
+    try {
+      accountSlug = await deps.getAccountSlug(vercel.token, { teamId: vercel.teamId });
+    } catch {
+      accountSlug = undefined;
+    }
+    const dashboard = accountSlug
+      ? `https://vercel.com/${accountSlug}/${siteName}`
+      : VERCEL_FALLBACK_DASHBOARD;
+
     // On Vercel-create failure: don't wipe the local dir — it's already in
     // sync with the GitHub repo, and the user can retry just the Vercel step.
     log(`→ Creating Vercel project ${siteName}`);
     const project: CreatedVercelProject = await deps.createVercelProject(
-      vercelToken!,
+      vercel.token,
       {
         name: siteName,
         gitRepoFullName: `${owner}/${siteName}`,
@@ -246,7 +274,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
         installCommand: VERCEL_INSTALL_COMMAND,
         nodeVersion: VERCEL_NODE_VERSION,
       },
-      { teamId: vercelTeamId }
+      { teamId: vercel.teamId }
     );
 
     // 10. Poll the first production deployment. Treat timeout as a warning,
@@ -256,18 +284,17 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     let deployment: VercelDeployment | undefined;
     try {
       deployment = await deps.pollDeploymentReady(
-        vercelToken!,
+        vercel.token,
         project.id,
         {
           timeoutMs: VERCEL_DEPLOY_TIMEOUT_MS,
-          teamId: vercelTeamId,
+          teamId: vercel.teamId,
         }
       );
     } catch (err) {
       // Both branches surface the dashboard URL — the project + repo are in
       // place either way, and the user needs the link regardless of whether
       // we treat this as fatal (DeploymentFailedError) or recoverable (timeout).
-      const dashboard = `https://vercel.com/${owner}/${siteName}`;
       if (err instanceof DeploymentTimeoutError) {
         log(`⚠ First deployment did not complete in 5 min. Check ${dashboard}`);
       } else {

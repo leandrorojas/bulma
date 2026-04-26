@@ -22,6 +22,7 @@ interface Spies {
   vercelCheckCalls: Array<{ token: string; namespace: string; teamId?: string }>;
   vercelCreateCalls: Array<{ token: string; options: unknown; teamId?: string }>;
   vercelPollCalls: Array<{ token: string; projectId: string; teamId?: string }>;
+  vercelSlugCalls: Array<{ token: string; teamId?: string }>;
   logs: string[];
 }
 
@@ -38,6 +39,7 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     vercelCheckCalls: [],
     vercelCreateCalls: [],
     vercelPollCalls: [],
+    vercelSlugCalls: [],
     logs: [],
   };
   const deps: CreateSiteDeps = {
@@ -62,6 +64,10 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     pollDeploymentReady: async (token, projectId, options) => {
       spies.vercelPollCalls.push({ token, projectId, teamId: options.teamId });
       return { uid: "dpl_fake", url: "my-site-abc.vercel.app", state: "READY" };
+    },
+    getAccountSlug: async (token, scope) => {
+      spies.vercelSlugCalls.push({ token, teamId: scope?.teamId });
+      return "alice-vercel";
     },
     runGit: async (args, options = {}) => {
       spies.gitCalls.push({ args, cwd: options.cwd, redact: options.redact });
@@ -365,7 +371,7 @@ describe("createSite — Vercel integration", () => {
     ).resolves.toBeUndefined();
     const warning = spies.logs.find((l) => l.includes("did not complete"));
     expect(warning).toBeDefined();
-    expect(warning).toContain("vercel.com/alice/my-site");
+    expect(warning).toContain("vercel.com/alice-vercel/my-site");
   });
 
   it("logs the dashboard URL before propagating non-timeout deployment errors", async () => {
@@ -380,21 +386,77 @@ describe("createSite — Vercel integration", () => {
     ).rejects.toThrow(/ERROR state/);
     const failureLog = spies.logs.find((l) => l.includes("Deployment failed"));
     expect(failureLog).toBeDefined();
-    expect(failureLog).toContain("vercel.com/alice/my-site");
+    expect(failureLog).toContain("vercel.com/alice-vercel/my-site");
+  });
+
+  it("uses the resolved Vercel account slug (not the GitHub owner) for dashboard URLs", async () => {
+    const { deps, spies } = makeDeps({
+      getAccountSlug: async (token, scope) => {
+        spies.vercelSlugCalls.push({ token, teamId: scope?.teamId });
+        return "different-vercel-slug";
+      },
+      pollDeploymentReady: async () => {
+        throw new DeploymentTimeoutError("timed out");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", {
+      cwd: "/w",
+      logger: (l) => spies.logs.push(l),
+    });
+    const warning = spies.logs.find((l) => l.includes("did not complete"));
+    expect(warning).toContain("vercel.com/different-vercel-slug/my-site");
+    expect(warning).not.toContain("vercel.com/alice/my-site");
+  });
+
+  it("falls back to the generic Vercel dashboard when slug resolution fails", async () => {
+    const { deps, spies } = makeDeps({
+      getAccountSlug: async () => {
+        throw new Error("403 forbidden");
+      },
+      pollDeploymentReady: async () => {
+        throw new DeploymentTimeoutError("timed out");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", {
+      cwd: "/w",
+      logger: (l) => spies.logs.push(l),
+    });
+    const warning = spies.logs.find((l) => l.includes("did not complete"));
+    expect(warning).toContain("vercel.com/dashboard");
+  });
+
+  it("rolls back the target dir when vercel.json write fails", async () => {
+    const { deps, spies } = makeDeps({
+      writeFile: async () => {
+        throw new Error("EACCES vercel.json");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(
+      /EACCES vercel\.json/
+    );
+    expect(spies.removeCalls).toContainEqual(path.join("/w", "my-site"));
+    expect(spies.createRepoCalls).toHaveLength(0);
   });
 
   it("skips all Vercel work when --skip-vercel is set", async () => {
     const { deps, spies } = makeDeps();
     const resolveVercelTokenSpy = jest.fn(deps.resolveVercelToken);
+    const getVercelTeamIdSpy = jest.fn(deps.getVercelTeamId);
     deps.resolveVercelToken = resolveVercelTokenSpy;
+    deps.getVercelTeamId = getVercelTeamIdSpy;
 
     const create = makeCreateSite(deps);
     await create("my-site", { cwd: "/w", skipVercel: true });
 
     expect(resolveVercelTokenSpy).not.toHaveBeenCalled();
+    expect(getVercelTeamIdSpy).not.toHaveBeenCalled();
     expect(spies.writeFileCalls).toHaveLength(0);
     expect(spies.vercelCheckCalls).toHaveLength(0);
     expect(spies.vercelCreateCalls).toHaveLength(0);
     expect(spies.vercelPollCalls).toHaveLength(0);
+    expect(spies.vercelSlugCalls).toHaveLength(0);
   });
 });

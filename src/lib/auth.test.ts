@@ -181,18 +181,21 @@ describe("vercelCliAuthPaths", () => {
     ]);
   });
 
-  it("uses LOCALAPPDATA on win32 when set", () => {
+  it("uses APPDATA + xdg.data on win32 when set", () => {
     const paths = vercelCliAuthPaths("win32", "C:\\Users\\Alice", {
-      LOCALAPPDATA: "D:\\AppData",
+      APPDATA: "D:\\Roaming",
     });
-    expect(paths[0]).toContain("D:\\AppData");
+    expect(paths[0]).toContain("D:\\Roaming");
+    expect(paths[0]).toContain("xdg.data");
     expect(paths[0]).toContain("com.vercel.cli");
+    expect(paths[0]).toContain("auth.json");
   });
 
-  it("falls back to %HOME%/AppData/Local on win32 without LOCALAPPDATA", () => {
+  it("falls back to %HOME%/AppData/Roaming on win32 without APPDATA", () => {
     const paths = vercelCliAuthPaths("win32", "C:\\Users\\Alice", {});
     expect(paths[0]).toContain("AppData");
-    expect(paths[0]).toContain("Local");
+    expect(paths[0]).toContain("Roaming");
+    expect(paths[0]).toContain("xdg.data");
   });
 
   it("uses XDG_DATA_HOME on linux when set", () => {

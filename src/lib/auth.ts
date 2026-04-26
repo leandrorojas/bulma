@@ -59,8 +59,10 @@ export function vercelCliAuthPaths(
     return [path.join(homeDir, "Library", "Application Support", "com.vercel.cli", "auth.json")];
   }
   if (platform === "win32") {
-    const localAppData = env.LOCALAPPDATA ?? path.join(homeDir, "AppData", "Local");
-    return [path.join(localAppData, "com.vercel.cli", "Data", "auth.json")];
+    // Vercel CLI uses %APPDATA%\xdg.data\com.vercel.cli\auth.json on Windows
+    // (see https://vercel.com/docs/project-configuration/global-configuration).
+    const appData = env.APPDATA ?? path.join(homeDir, "AppData", "Roaming");
+    return [path.join(appData, "xdg.data", "com.vercel.cli", "auth.json")];
   }
   const xdgData = env.XDG_DATA_HOME ?? path.join(homeDir, ".local", "share");
   return [path.join(xdgData, "com.vercel.cli", "auth.json")];
