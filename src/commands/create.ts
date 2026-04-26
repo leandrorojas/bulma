@@ -8,6 +8,7 @@ import { copyDir, pathExists, removeDir } from "../lib/fs-utils";
 import {
   checkGitHubAppInstalled,
   createVercelProject,
+  updateProjectNodeVersion,
   pollDeploymentReady,
   getAccountSlug,
   CreatedVercelProject,
@@ -60,6 +61,7 @@ export interface CreateSiteDeps {
   createPrivateRepo: typeof createPrivateRepo;
   checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
   createVercelProject: typeof createVercelProject;
+  updateProjectNodeVersion: typeof updateProjectNodeVersion;
   pollDeploymentReady: typeof pollDeploymentReady;
   getAccountSlug: typeof getAccountSlug;
   runGit: typeof runGit;
@@ -79,6 +81,7 @@ export const realDeps: CreateSiteDeps = {
   createPrivateRepo,
   checkGitHubAppInstalled,
   createVercelProject,
+  updateProjectNodeVersion,
   pollDeploymentReady,
   getAccountSlug,
   runGit,
@@ -272,10 +275,24 @@ export function makeCreateSite(deps: CreateSiteDeps) {
         buildCommand: VERCEL_BUILD_COMMAND,
         outputDirectory: VERCEL_OUTPUT_DIRECTORY,
         installCommand: VERCEL_INSTALL_COMMAND,
-        nodeVersion: VERCEL_NODE_VERSION,
       },
       { teamId: vercel.teamId }
     );
+    // Vercel rejects nodeVersion in the create body — set it via PATCH after.
+    // Best-effort: a 4xx here doesn't invalidate the project (Vercel just
+    // falls back to its default Node version), so we log a warning rather
+    // than abort the scaffold.
+    try {
+      await deps.updateProjectNodeVersion(
+        vercel.token,
+        project.id,
+        VERCEL_NODE_VERSION,
+        { teamId: vercel.teamId }
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`⚠ Failed to pin Node ${VERCEL_NODE_VERSION} on Vercel project: ${reason}`);
+    }
 
     // 10. Poll the first production deployment. Treat timeout as a warning,
     // not a fatal — the project is created and Vercel will keep building;

@@ -1,6 +1,7 @@
 import {
   checkGitHubAppInstalled,
   createVercelProject,
+  updateProjectNodeVersion,
   getLatestProductionDeployment,
   pollDeploymentReady,
   getAccountSlug,
@@ -169,7 +170,7 @@ describe("getAccountSlug", () => {
 });
 
 describe("createVercelProject", () => {
-  it("POSTs the project body with framework=null and the git link", async () => {
+  it("POSTs the project body with framework=null and the git link, never sending nodeVersion", async () => {
     const { fetch: fake, calls } = makeFetch({
       ok: true,
       status: 201,
@@ -183,7 +184,6 @@ describe("createVercelProject", () => {
         buildCommand: "npm run build",
         outputDirectory: "dist",
         installCommand: "npm install",
-        nodeVersion: "20.x",
       },
       {},
       { fetch: fake }
@@ -198,11 +198,12 @@ describe("createVercelProject", () => {
       buildCommand: "npm run build",
       outputDirectory: "dist",
       installCommand: "npm install",
-      nodeVersion: "20.x",
     });
+    // Vercel's POST endpoint rejects nodeVersion as an unknown property.
+    expect(body).not.toHaveProperty("nodeVersion");
   });
 
-  it("omits nodeVersion when not provided", async () => {
+  it("never includes nodeVersion in the request body", async () => {
     const { fetch: fake, calls } = makeFetch({
       ok: true,
       status: 201,
@@ -265,6 +266,61 @@ describe("createVercelProject", () => {
         { fetch: fake }
       )
     ).rejects.toThrow(/409 Conflict[\s\S]*name already exists/);
+  });
+});
+
+describe("updateProjectNodeVersion", () => {
+  it("PATCHes the project resource with the nodeVersion", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      body: { id: "prj_123", nodeVersion: "20.x" },
+    });
+    await updateProjectNodeVersion(
+      "t",
+      "prj_123",
+      "20.x",
+      {},
+      { fetch: fake }
+    );
+    expect(calls[0].url).toContain("/v9/projects/prj_123");
+    expect(calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ nodeVersion: "20.x" });
+  });
+
+  it("appends teamId to the URL when scoped", async () => {
+    const { fetch: fake, calls } = makeFetch({
+      ok: true,
+      body: { id: "prj_123" },
+    });
+    await updateProjectNodeVersion(
+      "t",
+      "prj_123",
+      "20.x",
+      { teamId: "team_abc" },
+      { fetch: fake }
+    );
+    expect(calls[0].url).toContain("teamId=team_abc");
+  });
+
+  it("rejects malformed project IDs before any fetch", async () => {
+    const fake = (async () => {
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch;
+    await expect(
+      updateProjectNodeVersion("t", "../escape", "20.x", {}, { fetch: fake })
+    ).rejects.toThrow(/Invalid Vercel project ID/);
+  });
+
+  it("surfaces non-2xx responses", async () => {
+    const { fetch: fake } = makeFetch({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      body: { error: { message: "invalid nodeVersion" } },
+    });
+    await expect(
+      updateProjectNodeVersion("t", "prj_123", "999.x", {}, { fetch: fake })
+    ).rejects.toThrow(/400 Bad Request[\s\S]*invalid nodeVersion/);
   });
 });
 

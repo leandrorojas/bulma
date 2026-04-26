@@ -139,8 +139,6 @@ export interface CreateProjectOptions {
   buildCommand: string;
   outputDirectory: string;
   installCommand: string;
-  // e.g. "20.x"
-  nodeVersion?: string;
 }
 
 export interface CreatedVercelProject {
@@ -156,7 +154,9 @@ export async function createVercelProject(
 ): Promise<CreatedVercelProject> {
   const doFetch = deps.fetch ?? fetch;
   const url = withTeam(`${API_BASE}/v10/projects`, scope.teamId);
-  const body: Record<string, unknown> = {
+  // Vercel's POST /v10/projects does NOT accept `nodeVersion` — it must be
+  // set via PATCH on the project resource after creation. See updateProjectNodeVersion.
+  const body = {
     name: options.name,
     framework: null,
     gitRepository: { type: "github", repo: options.gitRepoFullName },
@@ -164,9 +164,6 @@ export async function createVercelProject(
     outputDirectory: options.outputDirectory,
     installCommand: options.installCommand,
   };
-  if (options.nodeVersion) {
-    body.nodeVersion = options.nodeVersion;
-  }
   const res = await vercelFetch(
     doFetch,
     url,
@@ -180,6 +177,34 @@ export async function createVercelProject(
   const data = (await res.json()) as { id: string; name: string };
   assertValidProjectId(data.id);
   return { id: data.id, name: data.name };
+}
+
+// Pin the project's Node version. Must be called after createVercelProject —
+// the POST endpoint rejects `nodeVersion` as an unknown property, so the
+// only way to set it is PATCH /v9/projects/{id}.
+export async function updateProjectNodeVersion(
+  token: string,
+  projectId: string,
+  nodeVersion: string,
+  scope: VercelTeamScope = {},
+  deps: VercelClientDeps = {}
+): Promise<void> {
+  assertValidProjectId(projectId);
+  const doFetch = deps.fetch ?? fetch;
+  const url = withTeam(
+    `${API_BASE}/v9/projects/${encodeURIComponent(projectId)}`,
+    scope.teamId
+  );
+  await vercelFetch(
+    doFetch,
+    url,
+    {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeVersion }),
+    },
+    "update project nodeVersion"
+  );
 }
 
 export type DeploymentState =
