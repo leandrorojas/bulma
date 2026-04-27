@@ -4,7 +4,10 @@ import { VERSION } from "./version";
 import { createSite } from "./commands/create";
 import { TOP_LEVEL_HELP, CREATE_HELP } from "./help";
 
-export async function main(argv: string[]): Promise<number> {
+// Constructs the Commander program. Extracted so tests can build the same
+// program shape and exercise it with `exitOverride()` + a synthetic argv,
+// without main()'s side effects (process.exitCode, process.exit, etc.).
+export function buildProgram(): Command {
   const program = new Command();
 
   program
@@ -35,14 +38,17 @@ export async function main(argv: string[]): Promise<number> {
         try {
           await createSite(siteName, options);
         } catch (err) {
-          process.stderr.write(
-            `Error: ${err instanceof Error ? err.message : String(err)}\n`
-          );
+          process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
           process.exitCode = 1;
         }
       }
     );
 
+  return program;
+}
+
+export async function main(argv: string[]): Promise<number> {
+  const program = buildProgram();
   await program.parseAsync(argv);
   return Number(process.exitCode ?? 0);
 }
@@ -51,9 +57,7 @@ if (require.main === module) {
   main(process.argv)
     .then((code) => process.exit(code))
     .catch((err) => {
-      process.stderr.write(
-        `Fatal: ${err instanceof Error ? err.message : String(err)}\n`
-      );
+      process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     });
 }
