@@ -34,3 +34,10 @@ The submodule is pinned to a specific commit. To pull the latest senzu changes: 
 - Zero SonarQube issues on PR code before merging
 - No unresolved critical or major CodeRabbit findings on PR code before merging
 - Unit tests required for all modules
+- Integration tests for the create flow live at `src/commands/create.integration.test.ts` — they exercise real fs with mocked network/process boundaries
+
+## Testing layers
+
+1. **Unit tests** — co-located `*.test.ts`. Use dependency injection (no `jest.mock`). Cover folder-structure generation, GitHub API, Vercel API, auth, workflow contents, help text.
+2. **Integration tests** — `src/commands/create.integration.test.ts`. Real fs, mocked git + cloud APIs. Asserts files actually materialize on disk, cleanup happens on failure.
+3. **Manual verification** — see `docs/manual-verification.md`. End-to-end smoke against real GitHub + Vercel for changes that touch the create flow or external API integrations.
