@@ -16,10 +16,18 @@ export async function main(argv: string[]): Promise<number> {
     .description("Scaffold a new micro-frontend site from the hoi-poi shell-template")
     .option("-d, --description <text>", "Repo description")
     .option("--skip-vercel", "Skip Vercel project setup (offline / dev only)")
+    .option(
+      "--skip-actions",
+      "Skip generating GitHub Actions workflows + repo secrets + production environment"
+    )
     .action(
       async (
         siteName: string,
-        options: { description?: string; skipVercel?: boolean }
+        options: {
+          description?: string;
+          skipVercel?: boolean;
+          skipActions?: boolean;
+        }
       ) => {
         try {
           await createSite(siteName, options);

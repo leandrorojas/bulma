@@ -19,6 +19,16 @@ interface Spies {
   removeCalls: string[];
   createRepoCalls: Array<{ token: string; name: string; options: unknown }>;
   writeFileCalls: Array<{ filePath: string; content: string }>;
+  mkdirCalls: string[];
+  setSecretCalls: Array<{ owner: string; repo: string; name: string; value: string }>;
+  createEnvCalls: Array<{
+    token: string;
+    owner: string;
+    repo: string;
+    envName: string;
+    reviewerUserIds: number[];
+  }>;
+  getUserIdCalls: Array<{ token: string }>;
   vercelCheckCalls: Array<{ token: string; namespace: string; teamId?: string }>;
   vercelCreateCalls: Array<{ token: string; options: unknown; teamId?: string }>;
   vercelNodeVersionCalls: Array<{ token: string; projectId: string; nodeVersion: string; teamId?: string }>;
@@ -38,6 +48,10 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     removeCalls: [],
     createRepoCalls: [],
     writeFileCalls: [],
+    mkdirCalls: [],
+    setSecretCalls: [],
+    createEnvCalls: [],
+    getUserIdCalls: [],
     vercelCheckCalls: [],
     vercelCreateCalls: [],
     vercelNodeVersionCalls: [],
@@ -50,6 +64,23 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     resolveToken: async () => "ghp_fake_token",
     resolveVercelToken: async () => "vcp_fake_token",
     getVercelTeamId: () => undefined,
+    getBulmaSonarToken: () => undefined,
+    getAuthenticatedUser: async (token) => {
+      spies.getUserIdCalls.push({ token });
+      return { id: 4242, login: "alice" };
+    },
+    createEnvironment: async (token, owner, repo, envName, options) => {
+      spies.createEnvCalls.push({
+        token,
+        owner,
+        repo,
+        envName,
+        reviewerUserIds: options.reviewerUserIds,
+      });
+    },
+    setRepoSecret: async (owner, repo, name, value) => {
+      spies.setSecretCalls.push({ owner, repo, name, value });
+    },
     createPrivateRepo: async (token, name, options) => {
       spies.createRepoCalls.push({ token, name, options });
       return {
@@ -107,6 +138,9 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     },
     writeFile: async (filePath, content) => {
       spies.writeFileCalls.push({ filePath, content });
+    },
+    mkdir: async (dirPath) => {
+      spies.mkdirCalls.push(dirPath);
     },
     mkdtemp: async (prefix) => `${prefix}fake-tmp`,
     ...overrides,
@@ -312,11 +346,14 @@ describe("createSite — Vercel integration", () => {
     const create = makeCreateSite(deps);
     await create("my-site", { cwd: "/w" });
 
-    expect(spies.writeFileCalls).toHaveLength(1);
-    expect(spies.writeFileCalls[0].filePath).toBe(
+    const vercelJsonWrites = spies.writeFileCalls.filter((w) =>
+      w.filePath.endsWith("vercel.json")
+    );
+    expect(vercelJsonWrites).toHaveLength(1);
+    expect(vercelJsonWrites[0].filePath).toBe(
       path.join("/w", "my-site", "vercel.json")
     );
-    const json = JSON.parse(spies.writeFileCalls[0].content);
+    const json = JSON.parse(vercelJsonWrites[0].content);
     expect(json).toEqual({
       buildCommand: "npm run build",
       outputDirectory: "dist",
@@ -521,11 +558,217 @@ describe("createSite — Vercel integration", () => {
 
     expect(resolveVercelTokenSpy).not.toHaveBeenCalled();
     expect(getVercelTeamIdSpy).not.toHaveBeenCalled();
-    expect(spies.writeFileCalls).toHaveLength(0);
+    // No vercel.json — but workflow files are still written because
+    // --skip-actions is independent.
+    const vercelJsonWrites = spies.writeFileCalls.filter((w) =>
+      w.filePath.endsWith("vercel.json")
+    );
+    expect(vercelJsonWrites).toHaveLength(0);
     expect(spies.vercelCheckCalls).toHaveLength(0);
     expect(spies.vercelCreateCalls).toHaveLength(0);
     expect(spies.vercelTriggerCalls).toHaveLength(0);
     expect(spies.vercelPollCalls).toHaveLength(0);
     expect(spies.vercelSlugCalls).toHaveLength(0);
+  });
+});
+
+describe("createSite — GitHub Actions pipeline", () => {
+  it("writes the four workflow files into .github/workflows/ before git add", async () => {
+    const { deps, spies } = makeDeps();
+    let counter = 0;
+    let lastWorkflowOrder = -1;
+    let gitAddOrder = -1;
+    const innerWrite = deps.writeFile;
+    const innerRunGit = deps.runGit;
+    deps.writeFile = async (p, c) => {
+      if (p.includes(path.normalize(".github/workflows/"))) {
+        lastWorkflowOrder = counter++;
+      } else {
+        counter++;
+      }
+      await innerWrite(p, c);
+    };
+    deps.runGit = async (args, opts) => {
+      if (args.includes("add") && gitAddOrder === -1) {
+        gitAddOrder = counter++;
+      }
+      await innerRunGit(args, opts);
+    };
+
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    const workflowWrites = spies.writeFileCalls.filter((w) =>
+      w.filePath.includes(path.normalize(".github/workflows/"))
+    );
+    expect(workflowWrites.map((w) => w.filePath).sort()).toEqual([
+      path.join("/w", "my-site", ".github/workflows/code-quality.yml"),
+      path.join("/w", "my-site", ".github/workflows/integration-tests.yml"),
+      path.join("/w", "my-site", ".github/workflows/prerelease.yml"),
+      path.join("/w", "my-site", ".github/workflows/release.yml"),
+    ]);
+    expect(spies.mkdirCalls).toContainEqual(
+      path.join("/w", "my-site", ".github", "workflows")
+    );
+    expect(lastWorkflowOrder).toBeGreaterThanOrEqual(0);
+    expect(gitAddOrder).toBeGreaterThan(lastWorkflowOrder);
+  });
+
+  it("creates the production environment with the authenticated user as reviewer", async () => {
+    const { deps, spies } = makeDeps();
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    expect(spies.getUserIdCalls).toEqual([{ token: "ghp_fake_token" }]);
+    expect(spies.createEnvCalls).toEqual([
+      {
+        token: "ghp_fake_token",
+        owner: "alice",
+        repo: "my-site",
+        envName: "production",
+        reviewerUserIds: [4242],
+      },
+    ]);
+  });
+
+  it("sets SONAR_TOKEN when BULMA_SONAR_TOKEN is available", async () => {
+    const { deps, spies } = makeDeps({
+      getBulmaSonarToken: () => "sonar-secret-xxx",
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w" });
+
+    expect(spies.setSecretCalls).toEqual([
+      { owner: "alice", repo: "my-site", name: "SONAR_TOKEN", value: "sonar-secret-xxx" },
+    ]);
+  });
+
+  it("warns and skips secret-set when BULMA_SONAR_TOKEN is unset", async () => {
+    const { deps, spies } = makeDeps();
+    const create = makeCreateSite(deps);
+    await create("my-site", {
+      cwd: "/w",
+      logger: (l) => spies.logs.push(l),
+    });
+
+    expect(spies.setSecretCalls).toHaveLength(0);
+    const warning = spies.logs.find((l) =>
+      l.includes("BULMA_SONAR_TOKEN not set")
+    );
+    expect(warning).toBeDefined();
+  });
+
+  it("treats setRepoSecret failure as a warning, not fatal", async () => {
+    const { deps, spies } = makeDeps({
+      getBulmaSonarToken: () => "sonar-x",
+      setRepoSecret: async () => {
+        throw new Error("403 from gh");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).resolves.toBeUndefined();
+    const warning = spies.logs.find((l) =>
+      l.includes("Failed to set SONAR_TOKEN")
+    );
+    expect(warning).toBeDefined();
+  });
+
+  it("treats createEnvironment failure as a warning, not fatal", async () => {
+    const { deps, spies } = makeDeps({
+      createEnvironment: async () => {
+        throw new Error("404 not authorized");
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(
+      create("my-site", { cwd: "/w", logger: (l) => spies.logs.push(l) })
+    ).resolves.toBeUndefined();
+    const warning = spies.logs.find((l) =>
+      l.includes("Failed to create production environment")
+    );
+    expect(warning).toBeDefined();
+    expect(warning).toContain("manually");
+  });
+
+  it("skips all Actions setup when --skip-actions is set", async () => {
+    const { deps, spies } = makeDeps({
+      getBulmaSonarToken: () => "sonar-x",
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", { cwd: "/w", skipActions: true });
+
+    const workflowWrites = spies.writeFileCalls.filter((w) =>
+      w.filePath.includes(path.normalize(".github/workflows/"))
+    );
+    expect(workflowWrites).toHaveLength(0);
+    expect(spies.mkdirCalls).toHaveLength(0);
+    expect(spies.setSecretCalls).toHaveLength(0);
+    expect(spies.createEnvCalls).toHaveLength(0);
+    expect(spies.getUserIdCalls).toHaveLength(0);
+  });
+
+  it("rewrites push errors that mention 'workflow scope' into an actionable message", async () => {
+    const { deps, spies } = makeDeps({
+      runGit: async (args) => {
+        spies.gitCalls.push({ args });
+        if (args.includes("push")) {
+          throw new Error(
+            "git push failed: refusing to allow an OAuth App to create or update workflow `.github/workflows/code-quality.yml` without `workflow` scope"
+          );
+        }
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(
+      /missing the `workflow` scope.*gh auth refresh -h github\.com -s workflow.*github\.com\/alice\/my-site/s
+    );
+    expect(spies.removeCalls).toContainEqual(path.join("/w", "my-site"));
+  });
+
+  it("warns and skips env pre-creation on 422 plan-limit errors (Actions auto-creates on first run)", async () => {
+    const { deps, spies } = makeDeps({
+      createEnvironment: async (token, owner, repo, envName, options) => {
+        spies.createEnvCalls.push({
+          token,
+          owner,
+          repo,
+          envName,
+          reviewerUserIds: options.reviewerUserIds,
+        });
+        throw new Error(
+          'GitHub API error (create environment "production"): 422 Unprocessable Entity\n{"message":"Failed to create the environment protection rule. Please ensure the billing plan supports the required reviewers protection rule."}'
+        );
+      },
+    });
+    const create = makeCreateSite(deps);
+    await create("my-site", {
+      cwd: "/w",
+      logger: (l) => spies.logs.push(l),
+    });
+
+    // Only one attempt — no fallback retry.
+    expect(spies.createEnvCalls).toHaveLength(1);
+    expect(spies.createEnvCalls[0].reviewerUserIds).toEqual([4242]);
+    const warning = spies.logs.find((l) =>
+      l.includes("Required-reviewer protection needs GitHub Pro")
+    );
+    expect(warning).toBeDefined();
+    expect(warning).toContain("Skipping environment pre-creation");
+  });
+
+  it("rolls back the target dir when a workflow write fails", async () => {
+    const { deps, spies } = makeDeps({
+      writeFile: async (filePath) => {
+        if (filePath.endsWith("release.yml")) {
+          throw new Error("EIO release.yml");
+        }
+      },
+    });
+    const create = makeCreateSite(deps);
+    await expect(create("my-site", { cwd: "/w" })).rejects.toThrow(/EIO release\.yml/);
+    expect(spies.removeCalls).toContainEqual(path.join("/w", "my-site"));
+    expect(spies.createRepoCalls).toHaveLength(0);
   });
 });
