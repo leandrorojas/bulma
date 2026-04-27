@@ -137,3 +137,17 @@ export function getVercelTeamId(deps: GetVercelTeamIdDeps = {}): string | undefi
   const value = getEnv("VERCEL_TEAM_ID");
   return value && value.length > 0 ? value : undefined;
 }
+
+export interface GetSonarTokenDeps {
+  getEnv?: (name: string) => string | undefined;
+}
+
+// Optional. When set, bulma stores the value as the SONAR_TOKEN repo secret
+// on the new site so the scaffolded SonarQube workflow runs out of the box.
+// When unset, the workflow is still written but the SonarQube job will fail
+// until the user sets the secret manually.
+export function getBulmaSonarToken(deps: GetSonarTokenDeps = {}): string | undefined {
+  const getEnv = deps.getEnv ?? ((name: string) => process.env[name]);
+  const value = getEnv("BULMA_SONAR_TOKEN");
+  return value && value.length > 0 ? value : undefined;
+}

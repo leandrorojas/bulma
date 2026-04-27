@@ -1,10 +1,22 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveToken, resolveVercelToken, getVercelTeamId } from "../lib/auth";
-import { createPrivateRepo, CreatedRepo } from "../lib/github";
+import {
+  resolveToken,
+  resolveVercelToken,
+  getVercelTeamId,
+  getBulmaSonarToken,
+} from "../lib/auth";
+import {
+  createPrivateRepo,
+  getAuthenticatedUserId,
+  createEnvironment,
+  setRepoSecret,
+  CreatedRepo,
+} from "../lib/github";
 import { runGit } from "../lib/git";
 import { copyDir, pathExists, removeDir } from "../lib/fs-utils";
+import { WORKFLOW_FILES } from "../lib/workflows";
 import {
   checkGitHubAppInstalled,
   createVercelProject,
@@ -53,13 +65,18 @@ export interface CreateSiteOptions {
   hoiPoiCloneUrl?: string;
   logger?: (line: string) => void;
   skipVercel?: boolean;
+  skipActions?: boolean;
 }
 
 export interface CreateSiteDeps {
   resolveToken: typeof resolveToken;
   resolveVercelToken: typeof resolveVercelToken;
   getVercelTeamId: typeof getVercelTeamId;
+  getBulmaSonarToken: typeof getBulmaSonarToken;
   createPrivateRepo: typeof createPrivateRepo;
+  getAuthenticatedUserId: typeof getAuthenticatedUserId;
+  createEnvironment: typeof createEnvironment;
+  setRepoSecret: typeof setRepoSecret;
   checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
   createVercelProject: typeof createVercelProject;
   updateProjectNodeVersion: typeof updateProjectNodeVersion;
@@ -71,6 +88,7 @@ export interface CreateSiteDeps {
   removeDir: typeof removeDir;
   pathExists: typeof pathExists;
   writeFile: (filePath: string, content: string) => Promise<void>;
+  mkdir: (dirPath: string) => Promise<void>;
   mkdtemp: (prefix: string) => Promise<string>;
 }
 
@@ -80,7 +98,11 @@ export const realDeps: CreateSiteDeps = {
   resolveToken,
   resolveVercelToken,
   getVercelTeamId,
+  getBulmaSonarToken,
   createPrivateRepo,
+  getAuthenticatedUserId,
+  createEnvironment,
+  setRepoSecret,
   checkGitHubAppInstalled,
   createVercelProject,
   updateProjectNodeVersion,
@@ -92,6 +114,7 @@ export const realDeps: CreateSiteDeps = {
   removeDir,
   pathExists,
   writeFile: (filePath, content) => fs.writeFile(filePath, content, "utf8"),
+  mkdir: (dirPath) => fs.mkdir(dirPath, { recursive: true }).then(() => undefined),
   mkdtemp: (prefix) => fs.mkdtemp(prefix),
 };
 
@@ -172,6 +195,15 @@ export function makeCreateSite(deps: CreateSiteDeps) {
             VERCEL_JSON_CONTENT
           );
         }
+        if (!options.skipActions) {
+          // Workflow files must land in the initial commit so they're active
+          // from the first push. Each file lives under .github/workflows/ —
+          // create the directory once, then write each entry.
+          await deps.mkdir(path.join(targetDir, ".github", "workflows"));
+          for (const wf of WORKFLOW_FILES) {
+            await deps.writeFile(path.join(targetDir, wf.path), wf.content);
+          }
+        }
       } catch (err) {
         await deps.removeDir(targetDir).catch(() => {});
         throw err;
@@ -211,7 +243,57 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw err;
     }
 
-    // 7. Push using http.extraheader for one-shot auth.
+    // 7. Provision GitHub Actions secrets + the production approval gate.
+    // All best-effort: the workflows are already in the initial commit, but
+    // they'll fail until the secrets/environment exist. Failure here doesn't
+    // abort the scaffold — we surface a warning and continue, and the user
+    // can fix the gap manually before the next push.
+    if (!options.skipActions) {
+      const owner = parseGitHubOwner(created.htmlUrl);
+      const sonarToken = deps.getBulmaSonarToken();
+      if (sonarToken) {
+        log("→ Setting SONAR_TOKEN repo secret");
+        try {
+          await deps.setRepoSecret(owner, siteName, "SONAR_TOKEN", sonarToken);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          log(`⚠ Failed to set SONAR_TOKEN: ${reason}`);
+        }
+      } else {
+        log(
+          "⚠ BULMA_SONAR_TOKEN not set — SonarQube workflow will fail until you " +
+            `add a SONAR_TOKEN repo secret to ${created.htmlUrl}`
+        );
+      }
+
+      log("→ Creating production environment with QA approval gate");
+      try {
+        const reviewerId = await deps.getAuthenticatedUserId(token);
+        await deps.createEnvironment(token, owner, siteName, "production", {
+          reviewerUserIds: [reviewerId],
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (/billing plan|protection rule/i.test(reason)) {
+          // GitHub Free only allows required-reviewer protection on PUBLIC
+          // repos. On private free-tier repos this 422s. Skip pre-creating
+          // the environment — GitHub Actions auto-creates it on first
+          // release.yml run (just without the QA gate).
+          log(
+            "⚠ Required-reviewer protection needs GitHub Pro/Team on private repos. " +
+              "Skipping environment pre-creation — release.yml will run without a QA gate. " +
+              "Upgrade and re-run, or add reviewers manually in repo Settings → Environments."
+          );
+        } else {
+          log(
+            `⚠ Failed to create production environment: ${reason}. ` +
+              `release.yml will skip the QA gate until you configure it manually.`
+          );
+        }
+      }
+    }
+
+    // 8. Push using http.extraheader for one-shot auth.
     // The token never touches .git/config on disk.
     log(`→ Pushing to ${created.htmlUrl}`);
     await deps.runGit(["remote", "add", "origin", created.cloneUrl], {
@@ -228,6 +310,13 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       // Push failed — clean up local dir so user can retry cleanly.
       // The remote GitHub repo may exist as an empty orphan.
       await deps.removeDir(targetDir).catch(() => {});
+      const reason = err instanceof Error ? err.message : String(err);
+      if (/workflow.*scope/i.test(reason)) {
+        throw new Error(
+          `Push rejected: the gh OAuth token is missing the \`workflow\` scope, required for pushing files under .github/workflows/. ` +
+            `Refresh with: gh auth refresh -h github.com -s workflow, then delete ${created.htmlUrl} and re-run.`
+        );
+      }
       throw err;
     }
 
