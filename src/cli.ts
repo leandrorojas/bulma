@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { VERSION } from "./version";
 import { createSite } from "./commands/create";
+import { TOP_LEVEL_HELP, CREATE_HELP } from "./help";
 
 export async function main(argv: string[]): Promise<number> {
   const program = new Command();
@@ -9,7 +10,8 @@ export async function main(argv: string[]): Promise<number> {
   program
     .name("bulma")
     .description("Build Ultra-Light Micro-Apps — CLI for the Hoi-Poi platform")
-    .version(VERSION);
+    .version(VERSION)
+    .addHelpText("after", TOP_LEVEL_HELP);
 
   program
     .command("create <site-name>")
@@ -20,6 +22,7 @@ export async function main(argv: string[]): Promise<number> {
       "--skip-actions",
       "Skip generating GitHub Actions workflows + repo secrets + production environment"
     )
+    .addHelpText("after", CREATE_HELP)
     .action(
       async (
         siteName: string,
