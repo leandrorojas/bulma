@@ -65,9 +65,9 @@ function makeDeps(overrides: Partial<CreateSiteDeps> = {}): {
     resolveVercelToken: async () => "vcp_fake_token",
     getVercelTeamId: () => undefined,
     getBulmaSonarToken: () => undefined,
-    getAuthenticatedUserId: async (token) => {
+    getAuthenticatedUser: async (token) => {
       spies.getUserIdCalls.push({ token });
-      return 4242;
+      return { id: 4242, login: "alice" };
     },
     createEnvironment: async (token, owner, repo, envName, options) => {
       spies.createEnvCalls.push({
@@ -581,7 +581,7 @@ describe("createSite — GitHub Actions pipeline", () => {
     const innerWrite = deps.writeFile;
     const innerRunGit = deps.runGit;
     deps.writeFile = async (p, c) => {
-      if (p.includes(".github/workflows/")) {
+      if (p.includes(path.normalize(".github/workflows/"))) {
         lastWorkflowOrder = counter++;
       } else {
         counter++;
@@ -599,7 +599,7 @@ describe("createSite — GitHub Actions pipeline", () => {
     await create("my-site", { cwd: "/w" });
 
     const workflowWrites = spies.writeFileCalls.filter((w) =>
-      w.filePath.includes(".github/workflows/")
+      w.filePath.includes(path.normalize(".github/workflows/"))
     );
     expect(workflowWrites.map((w) => w.filePath).sort()).toEqual([
       path.join("/w", "my-site", ".github/workflows/code-quality.yml"),
@@ -700,7 +700,7 @@ describe("createSite — GitHub Actions pipeline", () => {
     await create("my-site", { cwd: "/w", skipActions: true });
 
     const workflowWrites = spies.writeFileCalls.filter((w) =>
-      w.filePath.includes(".github/workflows/")
+      w.filePath.includes(path.normalize(".github/workflows/"))
     );
     expect(workflowWrites).toHaveLength(0);
     expect(spies.mkdirCalls).toHaveLength(0);

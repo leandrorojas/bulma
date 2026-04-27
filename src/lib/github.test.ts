@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import {
   createPrivateRepo,
-  getAuthenticatedUserId,
+  getAuthenticatedUser,
   createEnvironment,
   setRepoSecret,
 } from "./github";
@@ -97,14 +97,14 @@ describe("createPrivateRepo", () => {
   });
 });
 
-describe("getAuthenticatedUserId", () => {
-  it("returns the numeric id from /user", async () => {
+describe("getAuthenticatedUser", () => {
+  it("returns id and login from /user", async () => {
     const { fetch: fake, calls } = makeFetch({
       ok: true,
       body: { id: 42, login: "alice" },
     });
-    const id = await getAuthenticatedUserId("t", { fetch: fake });
-    expect(id).toBe(42);
+    const user = await getAuthenticatedUser("t", { fetch: fake });
+    expect(user).toEqual({ id: 42, login: "alice" });
     expect(calls[0].url).toBe("https://api.github.com/user");
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(
       "Bearer t"
@@ -113,8 +113,15 @@ describe("getAuthenticatedUserId", () => {
 
   it("throws when the response has no id", async () => {
     const { fetch: fake } = makeFetch({ ok: true, body: { login: "alice" } });
-    await expect(getAuthenticatedUserId("t", { fetch: fake })).rejects.toThrow(
+    await expect(getAuthenticatedUser("t", { fetch: fake })).rejects.toThrow(
       /missing id/
+    );
+  });
+
+  it("throws when the response has no login", async () => {
+    const { fetch: fake } = makeFetch({ ok: true, body: { id: 42 } });
+    await expect(getAuthenticatedUser("t", { fetch: fake })).rejects.toThrow(
+      /missing login/
     );
   });
 
@@ -125,7 +132,7 @@ describe("getAuthenticatedUserId", () => {
       statusText: "Unauthorized",
       body: { message: "Bad credentials" },
     });
-    await expect(getAuthenticatedUserId("t", { fetch: fake })).rejects.toThrow(
+    await expect(getAuthenticatedUser("t", { fetch: fake })).rejects.toThrow(
       /401 Unauthorized[\s\S]*Bad credentials/
     );
   });
@@ -206,9 +213,14 @@ describe("createEnvironment", () => {
   });
 });
 
+interface FakeStdin extends EventEmitter {
+  write: jest.Mock;
+  end: jest.Mock;
+}
 interface FakeChild extends EventEmitter {
-  stdin: { write: jest.Mock; end: jest.Mock };
+  stdin: FakeStdin;
   stderr: EventEmitter;
+  kill: jest.Mock;
 }
 
 function makeFakeSpawn(
@@ -219,8 +231,12 @@ function makeFakeSpawn(
   const spawnFn = ((cmd: string, args: string[]) => {
     calls.push({ cmd, args });
     const child = new EventEmitter() as FakeChild;
-    child.stdin = { write: jest.fn(), end: jest.fn() };
+    const stdin = new EventEmitter() as FakeStdin;
+    stdin.write = jest.fn();
+    stdin.end = jest.fn();
+    child.stdin = stdin;
     child.stderr = new EventEmitter();
+    child.kill = jest.fn();
     setTimeout(() => {
       for (const chunk of stderrChunks) {
         child.stderr.emit("data", Buffer.from(chunk));
@@ -276,5 +292,29 @@ describe("setRepoSecret", () => {
     await expect(
       setRepoSecret("alice", "my-site", "SONAR_TOKEN", "supersecret", { spawn: fake })
     ).rejects.toThrow(/exited 1.*token=\*\*\*/);
+  });
+
+  it("redacts EVERY occurrence of the secret in stderr (not just the first)", async () => {
+    const { spawn: fake } = makeFakeSpawn(1, [
+      "first: supersecret · second: supersecret · third: supersecret\n",
+    ]);
+    let caughtMessage = "";
+    try {
+      await setRepoSecret("alice", "my-site", "SONAR_TOKEN", "supersecret", {
+        spawn: fake,
+      });
+    } catch (err) {
+      caughtMessage = (err as Error).message;
+    }
+    expect(caughtMessage).toMatch(/first: \*\*\* · second: \*\*\* · third: \*\*\*/);
+    expect(caughtMessage).not.toContain("supersecret");
+  });
+
+  it("rejects secret names that start with the reserved GITHUB_ prefix", async () => {
+    const spawnSpy = jest.fn() as unknown as typeof import("node:child_process").spawn;
+    await expect(
+      setRepoSecret("alice", "my-site", "GITHUB_TOKEN", "x", { spawn: spawnSpy })
+    ).rejects.toThrow(/reserved.*GITHUB_/);
+    expect(spawnSpy).not.toHaveBeenCalled();
   });
 });

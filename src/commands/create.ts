@@ -9,14 +9,14 @@ import {
 } from "../lib/auth";
 import {
   createPrivateRepo,
-  getAuthenticatedUserId,
+  getAuthenticatedUser,
   createEnvironment,
   setRepoSecret,
   CreatedRepo,
 } from "../lib/github";
 import { runGit } from "../lib/git";
 import { copyDir, pathExists, removeDir } from "../lib/fs-utils";
-import { WORKFLOW_FILES } from "../lib/workflows";
+import { buildWorkflowFiles } from "../lib/workflows";
 import {
   checkGitHubAppInstalled,
   createVercelProject,
@@ -74,7 +74,7 @@ export interface CreateSiteDeps {
   getVercelTeamId: typeof getVercelTeamId;
   getBulmaSonarToken: typeof getBulmaSonarToken;
   createPrivateRepo: typeof createPrivateRepo;
-  getAuthenticatedUserId: typeof getAuthenticatedUserId;
+  getAuthenticatedUser: typeof getAuthenticatedUser;
   createEnvironment: typeof createEnvironment;
   setRepoSecret: typeof setRepoSecret;
   checkGitHubAppInstalled: typeof checkGitHubAppInstalled;
@@ -100,7 +100,7 @@ export const realDeps: CreateSiteDeps = {
   getVercelTeamId,
   getBulmaSonarToken,
   createPrivateRepo,
-  getAuthenticatedUserId,
+  getAuthenticatedUser,
   createEnvironment,
   setRepoSecret,
   checkGitHubAppInstalled,
@@ -171,6 +171,18 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       };
     }
 
+    // Resolve the authenticated user once: we need both `id` (later, as the
+    // production-environment reviewer) and `login` (now, as the npm scope
+    // for prerelease.yml + release.yml — workflows publish to GitHub
+    // Packages under @<login>/<site>). createPrivateRepo creates the repo
+    // under the authenticated user, so login == owner deterministically.
+    let ghUser: { id: number; login: string } | undefined;
+    if (!options.skipActions) {
+      log("→ Resolving authenticated GitHub user");
+      ghUser = await deps.getAuthenticatedUser(token);
+    }
+    const publishScope = ghUser ? `@${ghUser.login}` : "@leandrorojas";
+
     // 4. Clone hoi-poi shallow into tmp, copy shell-template into target.
     // The inner cleanup catch covers both copyDir and the vercel.json write
     // so a partial scaffold is always rolled back.
@@ -200,7 +212,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
           // from the first push. Each file lives under .github/workflows/ —
           // create the directory once, then write each entry.
           await deps.mkdir(path.join(targetDir, ".github", "workflows"));
-          for (const wf of WORKFLOW_FILES) {
+          for (const wf of buildWorkflowFiles(publishScope)) {
             await deps.writeFile(path.join(targetDir, wf.path), wf.content);
           }
         }
@@ -268,9 +280,11 @@ export function makeCreateSite(deps: CreateSiteDeps) {
 
       log("→ Creating production environment with QA approval gate");
       try {
-        const reviewerId = await deps.getAuthenticatedUserId(token);
+        if (!ghUser) {
+          throw new Error("internal: ghUser must be resolved when skipActions is false");
+        }
         await deps.createEnvironment(token, owner, siteName, "production", {
-          reviewerUserIds: [reviewerId],
+          reviewerUserIds: [ghUser.id],
         });
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -294,7 +308,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     }
 
     // 8. Push using http.extraheader for one-shot auth.
-    // The token never touches .git/config on disk.
+    //    The token never touches .git/config on disk.
     log(`→ Pushing to ${created.htmlUrl}`);
     await deps.runGit(["remote", "add", "origin", created.cloneUrl], {
       cwd: targetDir,
@@ -325,7 +339,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       return;
     }
 
-    // 8. Vercel project. The repo must exist with code on `main` before we
+    // 9. Vercel project. The repo must exist with code on `main` before we
     // ask Vercel to link, so the first deployment has something to build.
     const owner = parseGitHubOwner(created.htmlUrl);
     log("→ Verifying Vercel ↔ GitHub integration");
@@ -343,7 +357,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       );
     }
 
-    // 9. Resolve the Vercel account slug for dashboard URLs. Best-effort:
+    // 10. Resolve the Vercel account slug for dashboard URLs. Best-effort:
     // if the lookup fails, fall back to the generic dashboard so we never
     // surface a 404 link to the user.
     let accountSlug: string | undefined;
@@ -411,7 +425,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
       throw err;
     }
 
-    // 10. Poll the first production deployment. Treat timeout as a warning,
+    // 11. Poll the first production deployment. Treat timeout as a warning,
     // not a fatal — the project is created and Vercel will keep building;
     // the user can check the dashboard.
     log("→ Waiting for first production deployment (up to 5 min)");

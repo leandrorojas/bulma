@@ -5,8 +5,13 @@ import { spawn as nodeSpawn } from "node:child_process";
 const REPO_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const OWNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
-// Secret names: A-Z, 0-9, underscore; cannot start with a digit or GITHUB_.
+// Secret names: must start with a letter or underscore, then alphanumerics +
+// underscore. GitHub also reserves the `GITHUB_` prefix — we reject it here
+// rather than letting the API 422 with a less-clear message.
 const SECRET_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+const GH_RESERVED_SECRET_PREFIX = "GITHUB_";
+
+const GH_SECRET_TIMEOUT_MS = 30_000;
 
 function assertOwnerRepo(owner: string, repo: string): void {
   if (!OWNER_NAME_PATTERN.test(owner)) {
@@ -84,10 +89,15 @@ function ghHeaders(token: string): Record<string, string> {
   };
 }
 
-export async function getAuthenticatedUserId(
+export interface AuthenticatedUser {
+  id: number;
+  login: string;
+}
+
+export async function getAuthenticatedUser(
   token: string,
   deps: CreateRepoDeps = {}
-): Promise<number> {
+): Promise<AuthenticatedUser> {
   const doFetch = deps.fetch ?? fetch;
   const res = await doFetch(`${GH_API_BASE}/user`, {
     method: "GET",
@@ -98,11 +108,14 @@ export async function getAuthenticatedUserId(
     const body = await res.text();
     throw new Error(`GitHub API error (get user): ${res.status} ${res.statusText}\n${body}`);
   }
-  const data = (await res.json()) as { id?: number };
+  const data = (await res.json()) as { id?: number; login?: string };
   if (typeof data.id !== "number") {
     throw new TypeError("GitHub API: /user response missing id");
   }
-  return data.id;
+  if (typeof data.login !== "string" || data.login.length === 0) {
+    throw new TypeError("GitHub API: /user response missing login");
+  }
+  return { id: data.id, login: data.login };
 }
 
 export interface CreateEnvironmentOptions {
@@ -178,6 +191,11 @@ export async function setRepoSecret(
   if (!SECRET_NAME_PATTERN.test(secretName)) {
     throw new TypeError(`Invalid secret name: ${secretName}`);
   }
+  if (secretName.startsWith(GH_RESERVED_SECRET_PREFIX)) {
+    throw new TypeError(
+      `Invalid secret name: ${secretName} (cannot start with reserved \`${GH_RESERVED_SECRET_PREFIX}\` prefix)`
+    );
+  }
   const repoArg: string = `${owner}/${repo}`;
   const safeSecretName: string = secretName;
   const spawn = deps.spawn ?? nodeSpawn;
@@ -189,20 +207,47 @@ export async function setRepoSecret(
   if (!child.stdin) {
     throw new Error("gh secret set: child stdin unavailable");
   }
+  let stdinErr: Error | undefined;
+  child.stdin.on("error", (err) => {
+    stdinErr = err;
+  });
   child.stdin.write(secretValue);
   child.stdin.end();
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
     stderr += String(chunk);
   });
+
+  const timer = setTimeout(() => {
+    child.kill("SIGTERM");
+  }, GH_SECRET_TIMEOUT_MS);
+
   await new Promise<void>((resolve, reject) => {
-    child.on("error", (err) => reject(err));
-    child.on("close", (code) => {
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (stdinErr) {
+        reject(new Error(`gh secret set ${secretName} stdin failed: ${stdinErr.message}`));
+        return;
+      }
+      if (signal === "SIGTERM") {
+        reject(
+          new Error(
+            `gh secret set ${secretName} timed out after ${GH_SECRET_TIMEOUT_MS}ms`
+          )
+        );
+        return;
+      }
       if (code === 0) {
         resolve();
       } else {
-        // Strip the secret value from any echoed errors defensively.
-        const safe = stderr.replace(secretValue, "***");
+        // Strip every occurrence of the secret value from echoed errors.
+        // replaceAll uses a literal pattern so regex-special chars in the
+        // secret are treated as plain text.
+        const safe = stderr.replaceAll(secretValue, "***");
         reject(new Error(`gh secret set ${secretName} exited ${code}: ${safe.trim()}`));
       }
     });
