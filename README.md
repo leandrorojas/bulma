@@ -101,7 +101,7 @@ my-site/
 - Framework: `null` (custom Webpack build)
 - Node 20.x pinned via `PATCH /v9/projects/{id}` after creation
 - Initial production deployment triggered explicitly (Vercel doesn't auto-deploy on link, only on push events that happen after linking)
-- Per-branch preview deployments on for free
+- Per-branch preview deployments enabled by default
 
 The command exits successfully when the production deployment reaches `READY` (5-min timeout). On timeout you get the dashboard URL as a warning rather than a failure — the build keeps running.
 
