@@ -14,7 +14,7 @@ Prerequisites:
             repo, workflow, delete_repo
   Vercel  VERCEL_TOKEN env var (or \`vercel login\` so the CLI cache works as
             a fallback). Vercel GitHub App must be installed on your account
-            with All-repos access:
+            with All repositories access:
             https://vercel.com/integrations/github
 
 Optional environment:
