@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: PR workflow questions
+    url: https://github.com/leandrorojas/senzu/blob/main/workflows/pr-workflow.md
+    about: How CI gates work, how to handle CodeRabbit / SonarQube findings, rate-limit recovery

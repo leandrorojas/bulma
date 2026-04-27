@@ -4,9 +4,5 @@ module.exports = {
   roots: ["<rootDir>/src"],
   testMatch: ["**/*.test.ts"],
   coverageReporters: ["lcov", "text"],
-  collectCoverageFrom: [
-    "src/**/*.ts",
-    "!src/**/*.test.ts",
-    "!src/cli.ts"
-  ]
+  collectCoverageFrom: ["src/**/*.ts", "!src/**/*.test.ts", "!src/cli.ts"],
 };
