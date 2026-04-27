@@ -19,6 +19,7 @@ Verify each of these before running the smoke test. If any are missing, the run 
 - [ ] `bulma` is built locally: `npm run build` in the bulma checkout
 
 Optional:
+
 - [ ] `BULMA_SONAR_TOKEN` set — needed only if you want the SonarQube workflow on the new site to actually run
 
 ## Smoke run
@@ -46,9 +47,9 @@ Watch for these log lines (in order):
 - `→ Scaffolding /private/tmp/site-prN`
 - `→ Initializing local git repo`
 - `→ Creating private GitHub repo site-prN`
-- `⚠ BULMA_SONAR_TOKEN not set — ...` *(unless set)*
+- `⚠ BULMA_SONAR_TOKEN not set — ...` _(unless set)_
 - `→ Creating production environment with QA approval gate`
-- `⚠ Required-reviewer protection needs GitHub Pro/Team ...` *(expected on free-tier private repos)*
+- `⚠ Required-reviewer protection needs GitHub Pro/Team ...` _(expected on free-tier private repos)_
 - `→ Pushing to https://github.com/leandrorojas/site-prN`
 - `→ Verifying Vercel ↔ GitHub integration`
 - `→ Creating Vercel project site-prN`

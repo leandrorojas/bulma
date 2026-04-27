@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: PR workflow questions
+    url: https://github.com/leandrorojas/bulma/blob/main/CONTRIBUTING.md#pr-workflow
+    about: How CI gates work, how to handle CodeRabbit / SonarQube findings, rate-limit recovery
