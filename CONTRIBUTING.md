@@ -19,7 +19,7 @@ If you forgot `--recurse-submodules`, run `git submodule update --init` after th
 Before pushing:
 
 ```bash
-npm test            # 158+ unit + integration tests, jest with coverage
+npm test            # unit + integration tests, jest with coverage
 npm run lint        # eslint
 npm run build       # tsc → dist/
 npm run format:check  # prettier (read-only)
@@ -35,7 +35,7 @@ The PR lifecycle — branching, CI gates, CodeRabbit handling, SonarQube trouble
 
 [`senzu/workflows/pr-workflow.md`](senzu/workflows/pr-workflow.md)
 
-Read it before your first PR. It captures non-obvious patterns (CodeRabbit's incremental review behavior, the empty-commit force-trigger, `tssecurity` sanitization shapes Sonar recognizes) collected across many PRs.
+The link resolves locally only when you've cloned with `--recurse-submodules` (the senzu repo itself is private — see [Cloning](#cloning)). Read it before your first PR; it captures non-obvious patterns (CodeRabbit's incremental review behavior, the empty-commit force-trigger, `tssecurity` sanitization shapes Sonar recognizes) collected across many PRs.
 
 ### Quick start
 

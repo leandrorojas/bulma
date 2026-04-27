@@ -16,4 +16,5 @@
 
 - [ ] `npm test` — all green
 - [ ] `npm run lint` — clean
+- [ ] `npm run format:check` — clean
 - [ ] `npm run build` — clean

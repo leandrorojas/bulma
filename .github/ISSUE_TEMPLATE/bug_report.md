@@ -35,6 +35,6 @@ labels: bug
 <!-- Paste the `bulma create` output (redact any tokens). For Vercel
      errors, include the project's dashboard URL. -->
 
-```
+```text
 
 ```
