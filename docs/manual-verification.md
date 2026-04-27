@@ -14,7 +14,7 @@ Verify each of these before running the smoke test. If any are missing, the run 
 - [ ] `gh auth status` shows scopes: `repo`, `workflow`, `delete_repo`
 - [ ] `vercel whoami` returns the expected account (`leandrorojas`)
 - [ ] `VERCEL_TOKEN` env var is set (`echo "len=${#VERCEL_TOKEN}"` ≥ 60 chars)
-- [ ] Vercel GitHub App installed with **All-repos** access:
+- [ ] Vercel GitHub App installed with **All repositories** access:
       https://github.com/settings/installations
 - [ ] `bulma` is built locally: `npm run build` in the bulma checkout
 

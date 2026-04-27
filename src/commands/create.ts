@@ -351,7 +351,7 @@ export function makeCreateSite(deps: CreateSiteDeps) {
     if (!installed) {
       throw new Error(
         `Vercel GitHub App not installed (or restricted) for "${owner}". ` +
-          `Install it with All-repos access at https://vercel.com/integrations/github, ` +
+          `Install it with All repositories access at https://vercel.com/integrations/github, ` +
           `then either re-run with --skip-vercel, or delete ${created.htmlUrl} ` +
           `and re-run to redo the whole flow.`
       );
